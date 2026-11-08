@@ -1,11 +1,3 @@
-"""delete 工具（删）：删除文件、空目录，或清空整个目录。
-
-- 默认只删文件与空目录：目录非空会拒绝，避免一次误删整棵树
-- `recursive=true` 时删整棵目录树（清空清理），需要显式指定
-- `dry_run=true` 先列清单；逐项回报成功、跳过、失败，单项失败不影响其余项
-
-工具约定：文件头 information 元数据 + 与 name 同名的业务函数；成功 return 文本，失败抛 RuntimeError。
-"""
 from __future__ import annotations
 
 import shutil
@@ -19,7 +11,7 @@ WILDCARDS = ("*", "?")
 information = {
     "name": "delete",
     "description": (
-        "删除文件或目录：items=[{path}] 条数不限。默认删文件与空目录，"
+        "删除文件或目录，默认删文件与空目录，"
         "recursive=true 删除整棵目录树（清空清理）。"
         "用于：清理中间产物、清空临时目录时。删除不可逆，可先 dry_run=true 列出将删除的内容。"
         "逐项回报成功、跳过、失败"
