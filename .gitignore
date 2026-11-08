@@ -1,0 +1,57 @@
+# 内置运行时（便携 CPython，约 190 MB）：由安装流程生成，不入库
+runtime/
+
+# 前端依赖与构建产物
+peifeng_agent/frontend/node_modules/
+peifeng_agent/frontend/dist/
+peifeng_agent/frontend/dist-backup-*/
+
+# E2E 截图（体积大、可重生成）
+peifeng_agent/frontend/e2e/shots/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 密钥与本地配置：绝不入库（api_key 在 .env 里）
+peifeng_agent/.env
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# 会话数据与用户工作区（含用户文件、备份、渲染图）
+peifeng_agent/backend/data/sessions/
+peifeng_agent/backend/data/**/backup/
+peifeng_agent/backend/data/**/render/
+peifeng_agent/backend/data/**/render_keep/
+peifeng_agent/backend/data/**/internal/
+
+# 运行期缓存（字体索引等，自动重建）
+peifeng_agent/backend/data/cache/
+
+# 运行期产物
+*.log
+logs/
+peifeng_agent/backend/data/*.db
+peifeng_agent/backend/data/*.sqlite*
+
+# 编辑器与系统
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+.reasonix/
+
+# 临时文件
+*.tmp
+*.bak
+scratch/

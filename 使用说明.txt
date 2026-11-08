@@ -1,0 +1,10 @@
+﻿培风 Windows x64 便携包
+
+1. 完整解压到有写入权限的目录，不要在压缩包内运行。
+2. 双击“启动培风.bat”，首次会提示填写自己的 DeepSeek API key。
+3. 浏览器自动打开，关闭服务请在终端按 Ctrl+C。
+
+无需安装 Python、uv 或 Node.js。模型调用需要网络和有效额度。
+PPT/PDF 生成与科研绘图使用内置依赖。PPT 页面预览仍需 PowerPoint，PDF 页面预览仍需 Poppler；未附带这些外部软件。
+自定义任务需要的 node/git/其他程序不包含在包内。
+密钥保存在 peifeng_agent/.env，会话保存在 peifeng_agent/backend/data。
