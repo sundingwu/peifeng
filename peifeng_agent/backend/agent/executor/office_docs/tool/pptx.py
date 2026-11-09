@@ -102,6 +102,13 @@ information = {
                 "description": "从空白画时**必须**给：{font, colors:{primary,secondary,light,accent,white}, body_sizes}；"
                 "缺 colors 会报错。套模板（template）时不需要，样式来自模板页",
             },
+            "style": {
+                "type": "object",
+                "description": (
+                    "文档格式（与 theme 同义，优先用这个）：字体、字号、配色、页边距、行距等；"
+                    "参数以技能的 style/theme 段为准——工具本身不带任何默认样式"
+                ),
+            },
             "append": {"type": "boolean", "description": "true 时在已有文件末尾追加页（分批产出用）"},
             "offset": {"type": "integer", "description": "已有页数（追加时的页码起点）"},
             "total": {"type": "integer", "description": "总页数（用于页码显示）"},
@@ -140,6 +147,7 @@ def pptx(
     inspect: bool = False,
     script: str = "",
     theme: Optional[dict] = None,
+    style: Optional[dict] = None,
     append: bool = False,
     offset: int = 0,
     total: int = 0,
@@ -172,7 +180,7 @@ def pptx(
     if template:
         return from_template(file, target, slides, template, append, overwrite, base_dir)
 
-    spec = merge_theme(theme)
+    spec = merge_theme(style or theme)
     target.parent.mkdir(parents=True, exist_ok=True)
     if append:
         if not target.exists():

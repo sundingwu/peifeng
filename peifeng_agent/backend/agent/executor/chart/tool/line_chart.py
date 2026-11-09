@@ -38,6 +38,14 @@ information = {
                 "type": "array",
                 "description": "数据系列 [{name, values}]，values 与 categories 等长",
             },
+            "style": {
+                "type": "object",
+                "description": (
+                    "样式覆盖（可选，来自技能的 style 段）：font/font_latin/font_size/title_size/"
+                    "tick_size/legend_size/palette/text/grid_color/spine/background/show_grid/"
+                    "grid_axis/title_position(top|bottom)/legend(auto|none)/dpi。不传用默认蓝白科研风"
+                ),
+            },
             "source": {
                 "type": "object",
                 "description": "从表格取数：{file, sheet?, category, values:[列名]}；给了它可省略 categories/series",
@@ -77,6 +85,7 @@ def line_chart(
     categories: Optional[list] = None,
     series: Optional[list] = None,
     source: Optional[dict] = None,
+    style: Optional[dict] = None,
     markers: bool = True,
     charts: list = None,
     base_dir=None,
@@ -96,7 +105,7 @@ def line_chart(
         data = kit.clean_series(series)
     kit.check_lengths(labels, data)
 
-    kit.apply()
+    spec = kit.apply(style)
     figure, axes = kit.plt.subplots(figsize=kit.figure_size(len(labels)))
     positions = kit.x_positions(labels)
     for index, item in enumerate(data):
@@ -104,20 +113,20 @@ def line_chart(
             positions,
             item["values"],
             label=item["name"],
-            color=kit.PALETTE[index % len(kit.PALETTE)],
+            color=kit.palette_of(spec)[index % len(kit.palette_of(spec))],
             marker="o" if markers else None,
             markersize=4,
             linewidth=1.8,
         )
     kit.label_x(axes, positions, labels)
-    kit.clean_axes(axes, grid_axis="y")
-    kit.place_legend(axes, len(data))
+    kit.clean_axes(axes, grid_axis="y", spec=spec)
+    kit.place_legend(axes, len(data), spec=spec)
     if title:
-        axes.set_title(title, pad=kit.title_pad(axes, len(data)))
+        kit.put_title(figure, axes, title, spec, pad=kit.title_pad(axes, len(data)))
     if xlabel:
         axes.set_xlabel(xlabel)
     if ylabel:
         axes.set_ylabel(ylabel)
     figure.tight_layout()
-    kit.save(figure, target)
+    kit.save(figure, target, spec)
     return kit.report(target, kind="折线图", axes=axes, categories=labels, series=data)

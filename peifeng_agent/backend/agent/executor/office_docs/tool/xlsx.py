@@ -58,6 +58,12 @@ information = {
                 "type": "object",
                 "description": "风格定义（字体字号、表头填充、边框、对齐）；不给就不设字体，参数从技能取",
             },
+            "style": {
+                "type": "object",
+                "description": (
+                    "文档格式（与 theme 同义，优先用这个）：字体、字号、配色、页边距、行距等；参数以技能的 style/theme 段为准——工具本身不带任何默认样式"
+                ),
+            },
             "overwrite": {"type": "boolean", "description": "true 时覆盖同名文件重写（改表用）"},
             "script": {
                 "type": "string",
@@ -95,6 +101,7 @@ def xlsx(
     file: str = "",
     sheets: Optional[list] = None,
     theme: Optional[dict] = None,
+    style: Optional[dict] = None,
     overwrite: bool = False,
     script: str = "",
     documents: list = None,
@@ -114,7 +121,7 @@ def xlsx(
     if not sheets:
         raise RuntimeError("没有可写入的内容：请给 sheets（[{name, header, rows}]）")
 
-    spec = merge_theme(theme)
+    spec = merge_theme(style or theme)
     target.parent.mkdir(parents=True, exist_ok=True)
     if overwrite and target.exists():
         replaced, renamed = True, False

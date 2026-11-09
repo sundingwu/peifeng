@@ -36,6 +36,14 @@ information = {
             "title": {"type": "string", "description": "标题，写结论而不是图名（如 经费六成用于教学）"},
             "categories": {"type": "array", "description": "各部分的名称，如 [教学, 科研, 行政]"},
             "values": {"type": "array", "description": "各部分的数值，与 categories 等长"},
+            "style": {
+                "type": "object",
+                "description": (
+                    "样式覆盖（可选，来自技能的 style 段）：font/font_latin/font_size/title_size/"
+                    "tick_size/legend_size/palette/text/grid_color/spine/background/show_grid/"
+                    "grid_axis/title_position(top|bottom)/legend(auto|none)/dpi。不传用默认蓝白科研风"
+                ),
+            },
             "source": {
                 "type": "object",
                 "description": "从表格取数：{file, sheet?, category, values:[列名]}，只取第一列数值",
@@ -74,6 +82,7 @@ def pie_chart(
     values: Optional[list] = None,
     source: Optional[dict] = None,
     donut: bool = False,
+    style: Optional[dict] = None,
     charts: list = None,
     base_dir=None,
 ) -> str:
@@ -100,14 +109,14 @@ def pie_chart(
     if sum(numbers) <= 0:
         raise RuntimeError("数值合计为 0，无法计算占比")
 
-    kit.apply()
+    spec = kit.apply(style)
     figure, axes = kit.plt.subplots(figsize=(5.6, 4.6))
     wedges, texts, autotexts = axes.pie(
         numbers,
         labels=labels,
         autopct="%1.1f%%",
         startangle=90,
-        colors=[kit.PALETTE[index % len(kit.PALETTE)] for index in range(len(labels))],
+        colors=[kit.palette_of(spec)[index % len(kit.palette_of(spec))] for index in range(len(labels))],
         wedgeprops={"linewidth": 1.2, "edgecolor": "white", "width": 0.45 if donut else 1.0},
         textprops={"color": kit.TEXT, "fontsize": 9},
         pctdistance=0.78,
@@ -117,9 +126,9 @@ def pie_chart(
         text.set_fontsize(8.5)
     axes.axis("equal")
     if title:
-        axes.set_title(title)
+        kit.put_title(figure, axes, title, spec)
     figure.tight_layout()
-    kit.save(figure, target)
+    kit.save(figure, target, spec)
     shape = "环形图" if donut else "饼图"
     total = sum(numbers)
     shares = "、".join(f"{label} {value / total * 100:.1f}%" for label, value in list(zip(labels, numbers))[:8])

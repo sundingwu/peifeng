@@ -38,6 +38,14 @@ information = {
                 "type": "array",
                 "description": "数据系列 [{name, values}]，values 与 categories 等长",
             },
+            "style": {
+                "type": "object",
+                "description": (
+                    "样式覆盖（可选，来自技能的 style 段）：font/font_latin/font_size/title_size/"
+                    "tick_size/legend_size/palette/text/grid_color/spine/background/show_grid/"
+                    "grid_axis/title_position(top|bottom)/legend(auto|none)/dpi。不传用默认蓝白科研风"
+                ),
+            },
             "source": {
                 "type": "object",
                 "description": "从表格取数：{file, sheet?, category, values:[列名]}",
@@ -78,6 +86,7 @@ def bar_chart(
     series: Optional[list] = None,
     source: Optional[dict] = None,
     horizontal: bool = False,
+    style: Optional[dict] = None,
     charts: list = None,
     base_dir=None,
 ) -> str:
@@ -96,12 +105,12 @@ def bar_chart(
         data = kit.clean_series(series)
     kit.check_lengths(labels, data)
 
-    kit.apply()
+    spec = kit.apply(style)
     figure, axes = kit.plt.subplots(figsize=kit.figure_size(len(labels), horizontal=horizontal))
     positions = kit.x_positions(labels)
     width = 0.8 / max(1, len(data))
     for index, item in enumerate(data):
-        color = kit.PALETTE[index % len(kit.PALETTE)]
+        color = kit.palette_of(spec)[index % len(kit.palette_of(spec))]
         offset = (index - (len(data) - 1) / 2) * width
         if horizontal:
             axes.barh(
@@ -121,18 +130,18 @@ def bar_chart(
             )
     if horizontal:
         kit.label_y(axes, positions, labels)
-        kit.clean_axes(axes, grid_axis="x")
+        kit.clean_axes(axes, grid_axis="x", spec=spec)
     else:
         kit.label_x(axes, positions, labels)
-        kit.clean_axes(axes, grid_axis="y")
-    kit.place_legend(axes, len(data))
+        kit.clean_axes(axes, grid_axis="y", spec=spec)
+    kit.place_legend(axes, len(data), spec=spec)
     if title:
-        axes.set_title(title, pad=kit.title_pad(axes, len(data)))
+        kit.put_title(figure, axes, title, spec, pad=kit.title_pad(axes, len(data)))
     if xlabel:
         axes.set_xlabel(xlabel)
     if ylabel:
         axes.set_ylabel(ylabel)
     figure.tight_layout()
-    kit.save(figure, target)
+    kit.save(figure, target, spec)
     shape = "条形图" if horizontal else "柱状图"
     return kit.report(target, kind=shape, axes=axes, categories=labels, series=data)

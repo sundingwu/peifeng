@@ -36,37 +36,85 @@ DPI = 300
 #: 一次最多画的分类数（再多图就不可读）
 MAX_CATEGORIES = 60
 
+#: 样式默认值：调用方给的 ``style`` 只覆盖这里出现的键，其余保持默认（蓝白科研风）。
+#: 图表格式由技能决定——技能里的 style 段原样传进来即可，工具不替你做审美决定。
+STYLE_DEFAULTS: dict[str, Any] = {
+    "font": None,               # 中文字体名（如 "SimSun" 宋体）；None = 按 FONT_CANDIDATES 回落
+    "font_latin": None,         # 西文/数字字体（如 "Times New Roman"）；None = 与中文相同
+    "font_size": 10,            # 正文字号
+    "title_size": 11,           # 标题字号
+    "tick_size": 9,             # 刻度字号
+    "legend_size": 9,           # 图例字号
+    "palette": list(PALETTE),   # 系列配色（按顺序取用）
+    "text": TEXT,               # 文字颜色
+    "grid_color": GRID,         # 网格线颜色
+    "spine": SPINE,             # 坐标轴颜色
+    "background": "white",      # 画布底色
+    "show_grid": True,          # 是否画网格
+    "grid_axis": "y",           # 网格方向：x / y / both
+    "title_position": "top",    # 图题位置：top（常用）/ bottom（论文里图题在图下）
+    "legend": "auto",           # auto（有图例就画）/ none（不画图例，靠图注说明）
+    "dpi": DPI,                 # 输出精度
+}
 
-def apply() -> None:
-    """统一字体、网格与坐标轴风格（每次画图前调用一次）。"""
+
+def resolve_style(style: Optional[dict]) -> dict[str, Any]:
+    """把调用方给的 style 合到默认值上（只认默认表里已有的键，非法值忽略）。"""
+    spec = dict(STYLE_DEFAULTS)
+    spec["palette"] = list(STYLE_DEFAULTS["palette"])
+    if not isinstance(style, dict):
+        return spec
+    for key, value in style.items():
+        if key in spec and value is not None:
+            spec[key] = list(value) if key == "palette" and isinstance(value, (list, tuple)) else value
+    return spec
+
+
+def apply(style: Optional[dict] = None) -> dict[str, Any]:
+    """统一字体、网格与坐标轴风格（每次画图前调用一次），返回生效的样式表。
+
+    ``style`` 来自技能：字体、字号、配色、网格、图题位置、dpi 都能改，
+    不传就用默认的蓝白科研风。返回的这份供各工具查 ``title_position`` / ``legend`` 等开关。
+    """
+    spec = resolve_style(style)
+    fonts = list(FONT_CANDIDATES)
+    if spec.get("font"):
+        fonts = [str(spec["font"]), *FONT_CANDIDATES]
     plt.rcParams.update(
         {
-            "font.family": "sans-serif",
-            "font.sans-serif": FONT_CANDIDATES,
-            "font.size": 10,
+            "font.family": "sans-serif" if not spec.get("font") else [str(spec["font"]), "sans-serif"],
+            "font.sans-serif": fonts,
+            "font.size": spec["font_size"],
             "axes.unicode_minus": False,
-            "axes.edgecolor": SPINE,
+            "axes.edgecolor": spec["spine"],
             "axes.linewidth": 0.8,
-            "axes.labelcolor": TEXT,
-            "axes.labelsize": 10,
-            "axes.titlesize": 11,
-            "axes.titlecolor": TEXT,
+            "axes.labelcolor": spec["text"],
+            "axes.labelsize": spec["font_size"],
+            "axes.titlesize": spec["title_size"],
+            "axes.titlecolor": spec["text"],
             "axes.titlepad": 10,
-            "axes.grid": True,
-            "axes.grid.axis": "y",
-            "grid.color": GRID,
+            "axes.grid": bool(spec["show_grid"]),
+            "axes.grid.axis": str(spec["grid_axis"]),
+            "grid.color": spec["grid_color"],
             "grid.linestyle": "--",
             "grid.linewidth": 0.6,
-            "xtick.color": TEXT,
-            "ytick.color": TEXT,
-            "xtick.labelsize": 9,
-            "ytick.labelsize": 9,
+            "xtick.color": spec["text"],
+            "ytick.color": spec["text"],
+            "xtick.labelsize": spec["tick_size"],
+            "ytick.labelsize": spec["tick_size"],
             "legend.frameon": False,
-            "legend.fontsize": 9,
-            "figure.facecolor": "white",
-            "savefig.facecolor": "white",
+            "legend.fontsize": spec["legend_size"],
+            "figure.facecolor": spec["background"],
+            "savefig.facecolor": spec["background"],
         }
     )
+    return spec
+
+
+def palette_of(spec: dict) -> list:
+    """取系列配色；技能给的列表太短时循环取用。"""
+    colors = list(spec.get("palette") or PALETTE)
+    return colors or list(PALETTE)
 
 
 def resolve(path: str, base_dir) -> Path:
@@ -88,10 +136,16 @@ def prepare(output: str, base_dir) -> Path:
     return target
 
 
-def save(figure, target: Path) -> None:
-    """按出版精度保存并关闭画布。"""
+def save(figure, target: Path, spec: Optional[dict] = None) -> None:
+    """按 style 指定的精度与底色保存，并关闭画布。"""
+    spec = spec or STYLE_DEFAULTS
     target.parent.mkdir(parents=True, exist_ok=True)
-    figure.savefig(target, dpi=DPI, bbox_inches="tight", facecolor="white")
+    figure.savefig(
+        target,
+        dpi=int(spec.get("dpi") or DPI),
+        bbox_inches="tight",
+        facecolor=str(spec.get("background") or "white"),
+    )
     plt.close(figure)
 
 
@@ -106,11 +160,14 @@ def pixel_size(target: Path) -> tuple[int, int]:
         return (0, 0)
 
 
-def active_font() -> str:
+def active_font(spec: Optional[dict] = None) -> str:
     """实际生效的中文字体名（渲染中文靠它，缺字形会变成方框）。"""
     from matplotlib import font_manager
 
-    for name in FONT_CANDIDATES:
+    candidates = list(FONT_CANDIDATES)
+    if spec and spec.get("font"):
+        candidates = [str(spec["font"]), *candidates]
+    for name in candidates:
         try:
             found = font_manager.findfont(font_manager.FontProperties(family=name), fallback_to_default=False)
         except Exception:  # noqa: BLE001 - 找不到就试下一个
@@ -152,11 +209,29 @@ def report(target: Path, *, kind: str, axes, categories=None, series=None, notes
     return "\n".join(lines)
 
 
-def clean_axes(axes, *, grid_axis: str = "y") -> None:
-    """去掉上右边框、只保留一个方向的网格并压到图下方。"""
+def clean_axes(axes, *, grid_axis: str = "y", spec: Optional[dict] = None) -> None:
+    """去掉上右边框、按 style 决定要不要网格，并把网格压到数据下方。
+
+    网格**不写死 True**：``style.show_grid = false``（论文常见要求）时要真的关掉——
+    这里曾经硬编码 True，rcParams 里的设置会被它覆盖。
+    """
+    spec = spec or STYLE_DEFAULTS
     for side in ("top", "right"):
         axes.spines[side].set_visible(False)
-    axes.grid(True, axis=grid_axis, linestyle="--", linewidth=0.6, color=GRID)
+    axes.spines["left"].set_color(spec.get("spine") or SPINE)
+    axes.spines["bottom"].set_color(spec.get("spine") or SPINE)
+    # 注意：grid(False, linestyle=...) 会**仍然启用网格**（matplotlib 认为给了线样式就是要画），
+    # 所以关网格必须单独调 grid(False)，不能带样式参数
+    if bool(spec.get("show_grid", True)):
+        axes.grid(
+            True,
+            axis=str(spec.get("grid_axis") or grid_axis),
+            linestyle="--",
+            linewidth=0.6,
+            color=spec.get("grid_color") or GRID,
+        )
+    else:
+        axes.grid(False)
     axes.set_axisbelow(True)
     if grid_axis == "y":
         axes.yaxis.set_major_locator(MaxNLocator(nbins=6))
@@ -189,8 +264,13 @@ def label_y(axes, positions: list[int], labels: list[str]) -> None:
     axes.set_yticklabels(labels)
 
 
-def place_legend(axes, count: int, *, columns: int = 4) -> None:
-    """多系列时把图例横排到绘图区上方，避免压住数据（科研风常见做法）。"""
+def place_legend(axes, count: int, *, columns: int = 4, spec: Optional[dict] = None) -> None:
+    """多系列时把图例横排到绘图区上方，避免压住数据（科研风常见做法）。
+
+    ``spec["legend"] == "none"`` 时不画图例——论文里常把系列说明写进图注，图上不放图例。
+    """
+    if spec and str(spec.get("legend") or "auto").lower() == "none":
+        return
     if count <= 1:
         return
     axes.legend(
@@ -202,6 +282,29 @@ def place_legend(axes, count: int, *, columns: int = 4) -> None:
         handlelength=1.6,
         columnspacing=1.4,
     )
+
+
+def put_title(figure, axes, title: str, spec: Optional[dict] = None, pad: int = 10) -> None:
+    """按 ``style.title_position`` 放图题。
+
+    ``top``（默认）用轴标题；``bottom`` 放在画布下方——中文论文/期刊常要求"图题在图下"，
+    这时候用轴标题就不合规范了。
+    """
+    if not title:
+        return
+    spec = spec or STYLE_DEFAULTS
+    if str(spec.get("title_position") or "top").lower() == "bottom":
+        figure.text(
+            0.5,
+            -0.02,
+            title,
+            ha="center",
+            va="top",
+            fontsize=spec.get("title_size") or 11,
+            color=spec.get("text") or TEXT,
+        )
+    else:
+        axes.set_title(title, pad=pad)
 
 
 def title_pad(axes, count: int) -> int:

@@ -83,6 +83,13 @@ information = {
                 "type": "object",
                 "description": "风格定义（页边距、各类段落的字体字号行距、表格样式）；不给就无格式，参数从技能取",
             },
+            "style": {
+                "type": "object",
+                "description": (
+                    "文档格式（与 theme 同义，优先用这个）：页边距、各类段落的字体字号行距、表格样式；"
+                    "参数以技能的 style/theme 段为准——工具本身不带任何默认样式"
+                ),
+            },
             "inspect": {
                 "type": "boolean",
                 "description": (
@@ -136,6 +143,7 @@ def docx(
     file: str = "",
     blocks: Optional[list] = None,
     theme: Optional[dict] = None,
+    style: Optional[dict] = None,
     append: bool = False,
     overwrite: bool = False,
     patch: Optional[list] = None,
@@ -164,7 +172,7 @@ def docx(
     if not blocks and not patch:
         raise RuntimeError("没有可写入的内容：请给 blocks（写入内容）或 patch（修改段落）")
 
-    spec = merge_theme(theme)
+    spec = merge_theme(style or theme)
     if patch:
         return apply_patch(target, patch, file)
 

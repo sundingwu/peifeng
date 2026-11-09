@@ -35,6 +35,14 @@ information = {
             "ylabel": {"type": "string", "description": "y 轴标签，带单位"},
             "x": {"type": "array", "description": "x 轴数值数组"},
             "y": {"type": "array", "description": "y 轴数值数组，与 x 等长"},
+            "style": {
+                "type": "object",
+                "description": (
+                    "样式覆盖（可选，来自技能的 style 段）：font/font_latin/font_size/title_size/"
+                    "tick_size/legend_size/palette/text/grid_color/spine/background/show_grid/"
+                    "grid_axis/title_position(top|bottom)/legend(auto|none)/dpi。不传用默认蓝白科研风"
+                ),
+            },
             "source": {
                 "type": "object",
                 "description": "从表格取数：{file, sheet?, category, values:[x列, y列]}，前两列即 x 与 y",
@@ -73,6 +81,7 @@ def scatter_chart(
     x: Optional[list] = None,
     y: Optional[list] = None,
     source: Optional[dict] = None,
+    style: Optional[dict] = None,
     charts: list = None,
     base_dir=None,
 ) -> str:
@@ -97,19 +106,19 @@ def scatter_chart(
     if not xs:
         raise RuntimeError("散点为空：请给 x 与 y")
 
-    kit.apply()
+    spec = kit.apply(style)
     figure, axes = kit.plt.subplots(figsize=(5.8, 4.2))
-    axes.scatter(xs, ys, s=42, color=kit.PALETTE[0], alpha=0.85, edgecolors="white", linewidths=0.6)
-    kit.clean_axes(axes, grid_axis="y")
+    axes.scatter(xs, ys, s=42, color=kit.palette_of(spec)[0], alpha=0.85, edgecolors="white", linewidths=0.6)
+    kit.clean_axes(axes, grid_axis="y", spec=spec)
     axes.grid(True, axis="x", linestyle="--", linewidth=0.6, color=kit.GRID)
     if title:
-        axes.set_title(title)
+        kit.put_title(figure, axes, title, spec)
     if xlabel:
         axes.set_xlabel(xlabel)
     if ylabel:
         axes.set_ylabel(ylabel)
     figure.tight_layout()
-    kit.save(figure, target)
+    kit.save(figure, target, spec)
     return kit.report(
         target,
         kind="散点图",
