@@ -1159,7 +1159,13 @@ class TaskOrchestrator:
                     total = len(plan.steps)
                     continue  # index 不变：新计划在 index 处就是"换个做法"的那一步
             return self.fail_task(describe_step_failure(index, step, result, failures))
-        content = self.task.step_results[-1].content if self.task.step_results else "任务已完成。"
+        # 完成时 worker 只给路径、不复述正文（正文在产出文件里），这里用"产出清单"兜底，
+        # 保证终态 content 不会是空的
+        last = self.task.step_results[-1] if self.task.step_results else None
+        content = (last.content if last else "") or last.summary if last else ""
+        if not content:
+            produced = [name for step in self.task.steps for name in (step.files or [])]
+            content = "任务已完成。" + (f"产出：{'、'.join(produced[:6])}" if produced else "")
         return self.finalize_task(content)
 
     def group_members(self, plan: Plan, index: int) -> List[int]:

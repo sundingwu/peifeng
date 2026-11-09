@@ -20,9 +20,10 @@ def normalize_result(data: dict) -> dict:
     """兼容极简输出格式（chart 只给 status / content / file_path）。
 
     - ``status: "failed"`` → ``needs_replan``：做不到就重排计划，而不是整任务失败
-    - 没有 ``summary`` → 用 ``content`` 顶上（下游摘要从它压）
     - 单个 ``file_path`` → ``files``（产出文件列表只有一份时用它）
     - ``failed`` 的原因写进 ``limitations``：重排与返修都能看到，不白干
+    - **完成时只给路径**（新的约定）：worker 不再复述文件内容，正文由编排层从文件读。
+      所以 ``summary`` 用"已产出 <文件名>"兜底，没有它就等于丢了下游衔接的锚点。
     """
     if not isinstance(data, dict):
         return data
@@ -30,11 +31,18 @@ def normalize_result(data: dict) -> dict:
     raw_status = str(data.get("status") or "").strip().lower()
     if raw_status == "failed":
         data["status"] = "needs_replan"
-    if not str(data.get("summary") or "").strip():
-        data["summary"] = str(data.get("content") or "").strip()
     file_path = str(data.get("file_path") or "").strip()
     if file_path and not data.get("files"):
         data["files"] = [file_path]
+    if not str(data.get("summary") or "").strip():
+        # 完成时不再要求复述正文：用产出文件名兜底，保住"下一步知道这步产出了什么"这个锚点
+        said = str(data.get("content") or "").strip()
+        if said:
+            data["summary"] = said
+        elif file_path:
+            data["summary"] = f"已产出 {file_path.replace(chr(92), '/').rsplit('/', 1)[-1]}"
+        else:
+            data["summary"] = "本步已完成"
     if data.get("status") == "needs_replan":
         if not data.get("limitations"):
             reason = str(data.get("content") or "").strip()

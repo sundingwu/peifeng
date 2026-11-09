@@ -17,10 +17,10 @@
 {
     "approved":true,
     "comment":"步骤摘要，简要介绍本步目标和完成方法",
-    "file_path":"worker产出文件的路径",
-    "file_content":"worker产出文件的内容"
+    "file_path":"worker产出文件的路径"
 }
 ```
+（通过时**不用回传文件内容**：只给路径，编排层自己去读。）
 不通过时返回：
 
 ```json
