@@ -18,7 +18,7 @@
 {
   "status":"completed",
   "content":"交付文件的内容",
-  "file_path":"交付文件的路径",
+  "file_path":"交付文件的路径"
 }
 ```
 
