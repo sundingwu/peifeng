@@ -23,6 +23,62 @@ def main() -> None:
     data.mkdir(parents=True, exist_ok=True)
     os.environ["MPLCONFIGDIR"] = str(data / "cache/matplotlib")
     os.environ["PEIFENG_PORTABLE"] = "1"
+    if "--offline" in sys.argv:
+        # 离线保底：预设任务的流程是确定的，直接调工具跑，不碰 planner/worker 的对话循环。
+        # 用法：launcher.py --offline <预设id> [--set key=value ...] [--dir <工作目录>]
+        from peifeng_agent.backend.workflow.offline import RUNNERS, run_preset
+        from peifeng_agent.backend.workflow.presets import PRESETS
+
+        args = [item for item in sys.argv[1:]]
+        position = args.index("--offline")
+        rest = args[position + 1:]
+        preset_id = next((item for item in rest if not item.startswith("--")), "")
+        if not preset_id or preset_id not in RUNNERS:
+            print("离线预设：")
+            for preset in PRESETS:
+                if preset["id"] in RUNNERS:
+                    print(f"  {preset['id']:<14} {preset['name']}")
+                    for spec in preset["fields"]:
+                        default = spec.get("default") or spec.get("fallback") or ""
+                        flag = "必填" if spec.get("required") else "可选"
+                        print(f"      --set {spec['key']}=…  （{flag}）{default}")
+            sys.exit(0 if not preset_id else 2)
+
+        values: dict[str, str] = {}
+        folder = ROOT
+        index = 0
+        while index < len(rest):
+            if rest[index] == "--set" and index + 1 < len(rest):
+                pair = rest[index + 1]
+                if "=" not in pair:
+                    print(f"--set 需要 key=value（收到：{pair}）")
+                    sys.exit(2)
+                key, value = pair.split("=", 1)
+                values[key.strip()] = value.strip()
+                index += 2
+                continue
+            if rest[index] == "--dir" and index + 1 < len(rest):
+                folder = Path(rest[index + 1]).resolve()
+                index += 2
+                continue
+            index += 1
+
+        folder.mkdir(parents=True, exist_ok=True)
+        print(f"离线执行：{preset_id}（不联网、不调用任何模型）")
+        print(f"工作目录：{folder}")
+        try:
+            result = run_preset(preset_id, values, folder)
+        except Exception as error:  # noqa: BLE001 - 离线入口要把原因直接给人看
+            print(f"失败：{error}")
+            sys.exit(1)
+        print(f"\n{result.summary}")
+        for note in result.notes:
+            print(f"注意：{note}")
+        print("\n产出：")
+        for item in result.files:
+            print(f"  {item}")
+        sys.exit(0)
+
     if "--check" in sys.argv:
         import ssl
         import tkinter
