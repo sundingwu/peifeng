@@ -1,3 +1,22 @@
+"""read 工具（看）：读文件内容、列目录。
+
+目标类型由路径自己决定，不用另选参数：
+
+- ``path`` 是文件（或 ``paths`` 批量）：内容按行输出（带行号，可 offset/limit 分段）；
+  ``.docx``/``.xlsx``/``.pptx`` 由文档库解析为文本；给 ``grep`` 就只回命中的行
+- ``path`` 是目录：列出条目（名称、类型、大小、修改时间）；给后缀（``.md``）只列这类文件，
+  给关键词/正则就在其中搜内容，``recursive=True`` 一直往下翻
+
+**不设人为上限**：命中多少给多少、目录多深翻多深、批量多少读多少——
+输出过大由工具层的统一兜底处理（超限落盘并把路径给模型），不在这里切。
+
+工具约定：文件头 information 元数据 + 与 name 同名的业务函数；成功 return 文本，失败抛 RuntimeError。
+
+**目录即能力**：本文件是**完整实现**，不转发到别处——它就是这个角色真正在跑的读逻辑。
+worker 共用 ``executor/common/tool/read.py``；planner 与 critic 各自一份：它们没有写权限，
+读的方式日后也可能与 worker 不同，复制而非共享是为了能各改各的（改实现要三份同步）。
+"""
+
 from __future__ import annotations
 
 import json
@@ -15,24 +34,25 @@ READ_WORKERS = 8
 
 information = {
     "name": "read",
-    "description":"负责读取文件内容和探查目录下存在哪些文件",
+    "description": "负责读取文件内容和探查目录下存在哪些文件",
     "parameters": {
         "type": "object",
         "properties": {
-            # ---- 二选一：读文件 / 列目录 ----
-            "file": {"type": "string", "description": "要读取的文件路径（与 dir 二选一）"},
-            "dir": {"type": "string", "description": "要探查的目录路径（与 file 二选一）"},
+            "path": {"type": "string",
+                     "description": "要看的路径：文件→读内容；目录→列条目或搜内容"},
             "paths": {"type": "array", "items": {"type": "string"},
-                      "description": "一次读多个文件（与 file 二选一），结果按 ===== 路径 ===== 分段"},
+                      "description": "一次看多个（文件或目录可以混放），结果按 ===== 路径 ===== 分段"},
             "grep": {"type": "string",
                      "description": "筛选。关键词按**字面量**搜（`C++`、`file(name)`、`a|b` 这些照原样匹配）；"
-                                    "要用正则就写成 `/…/`；探查目录时 `.md`/`*.txt` 这类当后缀，只列这类文件"},
-            "offset": {"type": "integer", "description": "读文件时的起始行号（默认为1）"},
-            "limit": {"type": "integer", "description": "【读文件】最多返回行数（不传就返回全部）"},
-            # ---- 仅列目录 ----
-            "recursive": {"type": "boolean", "description": "【列目录】是否递归到底（true = 不限层数）"},
+                                    "要用正则就写成 `/…/`；目标为目录时 `.md`/`*.txt` 这类当后缀，只列这类文件"},
+            "offset": {"type": "integer",
+                       "description": "起始行号（仅文件；不传从第 1 行开始）"},
+            "limit": {"type": "integer",
+                      "description": "最多返回行数（仅文件；不传就返回全部）"},
+            "recursive": {"type": "boolean",
+                          "description": "目标为目录时是否一直往下翻（true = 不限层数）"},
         },
-        "required": [], 
+        "required": [],
     },
 }
 
@@ -61,8 +81,7 @@ def classify_grep(value: str, *, is_dir: bool = False) -> tuple[str, str]:
 
 
 def read(
-    file: str = "",
-    dir: str = "",
+    path: str = "",
     paths: Optional[List[str]] = None,
     grep: str = "",
     offset: Optional[int] = None,
@@ -70,45 +89,56 @@ def read(
     recursive: bool = False,
     base_dir=None,
 ) -> str:
-    """读文件或列目录——两套参数，看参数名就知道走哪条路。
+    """看一个或多个目标：**文件读内容，目录列条目或搜内容**。
 
-    **读文件**（``file``，或 ``paths`` 一次读多个）
-    - 不给 ``grep`` → 全文，可用 ``offset`` / ``limit`` 分段
-    - 给关键词或正则 → 只回命中的行
-
-    **列目录**（``dir``）
-    - 不给 ``grep`` → 列出条目
-    - 给后缀（``.md``）→ 只列这类文件
-    - 给关键词或正则 → 在文件内容里搜
-    - ``recursive=true`` → 一直往下翻，不设层数限制
+    目标类型由路径自己决定，不用另选参数——``path="a.md"`` 是文件，``path="src"`` 是目录。
+    ``paths`` 可以混放文件和目录（批量探查多个不相关的目录时用）。
     """
     batch = as_text_list(paths, "paths", 0)
     if batch:
-        return read_batch(batch, offset=offset, limit=limit, grep=grep, base_dir=base_dir)
+        return read_batch(
+            batch, offset=offset, limit=limit, grep=grep, recursive=recursive, base_dir=base_dir
+        )
 
-    target_text = str(file or dir or "").strip()
+    target_text = str(path or "").strip()
     if not target_text:
-        raise RuntimeError("read 需要 file（读文件）、dir（列目录）或 paths（多个文件）之一")
-    target = resolve(target_text, base_dir)
-    kind, cleaned = classify_grep(grep, is_dir=bool(dir))
+        raise RuntimeError("read 需要 path（文件或目录）或 paths（多个）之一")
+    return read_one(
+        target_text, grep=grep, offset=offset, limit=limit, recursive=recursive, base_dir=base_dir
+    )
 
-    # ---- 列目录 ----
-    if dir:
-        if not target.is_dir():
-            raise RuntimeError(f"目录不存在：{dir}")
+
+def read_one(
+    target_text: str,
+    *,
+    grep: str = "",
+    offset: Optional[int] = None,
+    limit: Optional[int] = None,
+    recursive: bool = False,
+    base_dir=None,
+) -> str:
+    """看单个目标：是目录就列/搜，是文件就读/搜。
+
+    目录与文件对 ``grep`` 的解释不同：目录下 ``.md`` 是后缀（只列这类文件），
+    文件里 ``.md`` 只是要找的字面量——所以 ``classify_grep`` 要传 ``is_dir``。
+    """
+    target = resolve(target_text, base_dir)
+
+    if target.is_dir():
+        kind, cleaned = classify_grep(grep, is_dir=True)
         if kind == "suffix":
             return list_entries(target, f"*{cleaned}", recursive)
         if kind in ("keyword", "regex"):
-            return grep_lines(target, cleaned, kind == "regex", recursive, dir)
+            return grep_lines(target, cleaned, kind == "regex", recursive, target_text)
         return list_entries(target, "*", recursive)
 
-    # ---- 读文件 ----
     if not target.is_file():
-        raise RuntimeError(f"文件不存在：{file}")
+        raise RuntimeError(f"路径不存在：{target_text}")
     if is_image(target):
         return image_info(target)
+    kind, cleaned = classify_grep(grep)
     if kind in ("keyword", "regex"):
-        return grep_lines(target, cleaned, kind == "regex", False, file)
+        return grep_lines(target, cleaned, kind == "regex", False, target_text)
     return format_lines(str(target), content_lines(target), offset, limit)
 
 
@@ -118,11 +148,17 @@ def read_batch(
     offset: Optional[int] = None,
     limit: Optional[int] = None,
     grep: str = "",
+    recursive: bool = False,
     base_dir=None,
 ) -> str:
-    """一次读多个文件：并发读，每段前带 ``===== 路径 =====``（条数与总字数都不设限）。"""
+    """一次看多个目标：并发跑，每段前带 ``===== 路径 =====``（条数与总字数都不设限）。
+
+    ``items`` 里文件和目录可以混放——各自按类型处理，所以多目录探查一次调用就够。
+    """
     results = run_parallel_safe(
-        lambda item: read(file=item, offset=offset, limit=limit, grep=grep, base_dir=base_dir),
+        lambda item: read_one(
+            item, grep=grep, offset=offset, limit=limit, recursive=recursive, base_dir=base_dir
+        ),
         items,
         workers=READ_WORKERS,
         thread_prefix="read",
@@ -175,7 +211,7 @@ def scan(root: Path, matcher, recursive: bool) -> tuple[list[str], int, int]:
                 shown = f"{entry.relative_to(root).as_posix()}"
             except ValueError:
                 shown = entry.name
-            # 文件名本身命中就算一条：read(dir="detail", grep="task1_step") 要能直接列出文件，
+            # 文件名本身命中就算一条：read(path="detail", grep="task1_step") 要能直接列出文件，
             # 而不是去这些文件的内容里找这个字符串
             if matcher.search(entry.name):
                 hits.append(f"{shown}  （文件名匹配）")

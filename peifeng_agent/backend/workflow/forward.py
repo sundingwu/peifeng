@@ -664,7 +664,7 @@ def build_session_summary(state: SessionState, *, with_paths: bool = True) -> st
             if entries:
                 lines.append("  中断步骤完整操作记录：" + json.dumps(entries, ensure_ascii=False))
         lines.append(
-            f'  明细：read(dir="<会话目录>/detail", grep="task{summary.task_seq}_step")'
+            f'  明细：read(path="<会话目录>/detail", grep="task{summary.task_seq}_step")'
             "（每步一个文件，直接全量读即可）"
         )
     return "\n".join(lines)

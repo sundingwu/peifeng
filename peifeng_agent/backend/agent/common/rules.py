@@ -49,7 +49,7 @@ COMMON_RULES = """<通用规则>
   - **会话记录**是一个 `summary.json` 加一个 `detail/` 目录：`summary.json` 存任务摘要与步骤摘要
   （跨任务可见）；`detail/task{任务号}_step{步骤号}.json` 是**每步一个文件**的完整明细
   （每次尝试、工具调用、评审结论）。要查某一步就直接全量读那个小文件，
-  `read(dir="<会话目录>/detail", grep="task2_step")` 能列出某个任务的全部步骤。
+  `read(path="<会话目录>/detail", grep="task2_step")` 能列出某个任务的全部步骤。
   注意明细**只在任务收尾时写入**：任务进行中还没有本任务的记录。
 - **会话记录**是两个文件：`summary.json` 跨任务摘要；`detail.json` 按任务号索引的完整明细，
   用 read(json_path="tasks.<任务号>") 按需取一段（如 tasks.3.steps[1].attempts[0].result.content），
