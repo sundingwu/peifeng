@@ -143,3 +143,20 @@ export const endpoints = {
 
 /** 历史任务项：`original_request` 是用户实际输入的那句话（优先用于展示）。 */
 export type TaskItemView = TaskItem & { original_request?: string };
+
+/** 离线执行一个预设：不调用任何模型，直接产出文件。 */
+export async function runOffline(
+  preset: string,
+  values: Record<string, string>,
+): Promise<{ files: string[]; summary: string; notes: string[] }> {
+  const response = await fetch("/api/offline", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ preset, values }),
+  });
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(detail || `离线执行失败（HTTP ${response.status}）`);
+  }
+  return response.json();
+}

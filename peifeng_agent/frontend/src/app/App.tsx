@@ -12,7 +12,7 @@
  * 这里只负责结构与状态。
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { App as AntApp, Button, Input } from "antd";
+import { App as AntApp, Button, Input, Modal } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { endpoints, get, post, type AgentEvent, type Snapshot } from "../api/client";
@@ -21,6 +21,7 @@ import { CapabilityDrawer } from "../components/CapabilityDrawer";
 import { SendIcon, StopIcon } from "../components/icons";
 import { TaskEntryModal } from "../components/TaskEntryModal";
 import { TASK_ENTRIES, buildTaskRequest, type TaskEntry } from "../taskEntries";
+import { runOffline } from "../api/client";
 import { Sidebar } from "../components/Sidebar";
 import { StreamView, type StreamItem } from "../components/StreamView";
 import { useEventStream } from "../hooks/useEventStream";
@@ -40,6 +41,11 @@ export function App() {
 
   const [showCapabilities, setShowCapabilities] = useState(false);
   const [openEntry, setOpenEntry] = useState<TaskEntry | null>(null);
+  //: 离线执行：忙碌标记与结果（离线不占会话，结果就地弹出来）
+  const [offlineBusy, setOfflineBusy] = useState(false);
+  const [offlineReport, setOfflineReport] = useState<
+    { name: string; files: string[]; summary: string; notes: string[]; error?: string } | null
+  >(null);
 
   const refresh = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: ["state"] });
@@ -218,16 +224,57 @@ export function App() {
               draft={draft}
               onDraft={setDraft}
               onSubmit={() => submit(draft)}
+            offlineBusy={offlineBusy}
               onCancel={() => action.mutate({ path: endpoints.cancel })}
             />
           </div>
         </main>
       </div>
 
-      <TaskEntryModal entry={openEntry} onCancel={() => setOpenEntry(null)} onSubmit={(entry, values) => {
+      <TaskEntryModal entry={openEntry} onCancel={() => setOpenEntry(null)} onSubmit={async (entry, values) => {
         setOpenEntry(null);
+        // 有 offline 的入口走离线：不调模型、不占会话，直接产出文件
+        if (entry.offline) {
+          setOfflineBusy(true);
+          try {
+            const result = await runOffline(entry.offline, values);
+            setOfflineReport({ name: entry.name, ...result });
+          } catch (error) {
+            setOfflineReport({ name: entry.name, files: [], summary: "", notes: [], error: String(error) });
+          } finally {
+            setOfflineBusy(false);
+          }
+          return;
+        }
         submit(buildTaskRequest(entry, values));
       }} />
+      {/* 离线执行结果：不占会话，就地弹出来 */}
+      <Modal
+        open={offlineReport !== null}
+        title={offlineReport?.name ? `${offlineReport.name}（离线执行）` : "离线执行"}
+        onCancel={() => setOfflineReport(null)}
+        footer={[<Button key="ok" type="primary" onClick={() => setOfflineReport(null)}>知道了</Button>]}
+        destroyOnHidden
+      >
+        {offlineReport?.error ? (
+          <p className="offline-error">失败：{offlineReport.error}</p>
+        ) : (
+          <>
+            <p className="offline-summary">{offlineReport?.summary}</p>
+            {offlineReport?.notes?.map((note, index) => (
+              <p key={index} className="offline-note">注意：{note}</p>
+            ))}
+            {offlineReport?.files?.length ? (
+              <ul className="offline-files">
+                {offlineReport.files.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            ) : null}
+          </>
+        )}
+      </Modal>
+
       <CapabilityDrawer open={showCapabilities} onClose={() => setShowCapabilities(false)} />
       <AskModal
         pending={pending}
@@ -375,12 +422,15 @@ function Composer({
   onDraft,
   onSubmit,
   onCancel,
+  offlineBusy = false,
 }: {
   running: boolean;
   draft: string;
   onDraft: (text: string) => void;
   onSubmit: () => void;
   onCancel: () => void;
+  /** 离线执行中：输入框提示一下，避免用户以为没反应 */
+  offlineBusy?: boolean;
 }) {
   return (
     <div className="composer">
@@ -398,7 +448,7 @@ function Composer({
           }}
           autoSize={{ minRows: 2, maxRows: 7 }}
           variant="borderless"
-          placeholder="不知周之梦为胡蝶与，胡蝶之梦为周与？"
+          placeholder={offlineBusy ? "离线执行中，请稍候…" : "不知周之梦为胡蝶与，胡蝶之梦为周与？"}
         />
         <div className="composer-bar">
           {running && (

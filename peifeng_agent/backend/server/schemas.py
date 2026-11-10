@@ -140,6 +140,23 @@ class TaskItem(BaseModel):
     files: list[str] = Field(default_factory=list)
 
 
+class OfflineBody(BaseModel):
+    """离线执行一个预设：不调模型，直接跑固定流程。"""
+
+    preset: str = ""
+    values: dict[str, str] = Field(default_factory=dict)
+    #: 工作目录（相对项目目录或绝对路径）；空表示用当前会话的工作区
+    folder: str = ""
+
+
+class OfflineResultBody(BaseModel):
+    """离线执行结果：产出文件、说明与注意事项。"""
+
+    files: list[str] = Field(default_factory=list)
+    summary: str = ""
+    notes: list[str] = Field(default_factory=list)
+
+
 class Snapshot(BaseModel):
     """页面加载与断线重连时拉取的状态快照。"""
 

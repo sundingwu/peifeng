@@ -4,14 +4,12 @@
 这类活的步骤不依赖模型决策。工具层（chart_kit / docx / pptx / xlsx）本身也不调模型，
 所以只要绕过 planner 与 worker 的对话循环，直接调工具就能跑。
 
-**代价**：需要"生成内容"的两个预设只能**重组素材原文**，不能总结改写——
-``report_docx`` 与 ``pptx_deck`` 在离线模式下是"把材料重新排成文档/页面"，不是"写一篇新内容"。
-输出里会明确标注这一点，避免用户误以为质量与在线模式相同。
+**边界**：只保留**做得完整**的三个（读表画图、清洗汇总、按类型归档）——
+它们不需要理解自然语言，规则是确定的。而"写文档""做 PPT"这类要生成内容的任务
+离线只能重组素材原文，质量不达标，**不做离线版**，一律走在线模式。
 """
 from __future__ import annotations
 
-import csv
-import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -249,129 +247,12 @@ def run_archive(values: dict[str, str], workspace: Path) -> OfflineResult:
     )
 
 
-# ---------------------------------------------------------------- 素材 → 文档（重组原文）
-
-def material_text(path: Path) -> str:
-    """读素材正文：md/txt/csv 直读，docx/xlsx/pptx 走 text 模块的解析。"""
-    from peifeng_agent.backend.utils.text import content_lines
-
-    return "\n".join(str(line) for line in content_lines(path))
-
-
-def split_sections(text: str) -> list[tuple[str, list[str]]]:
-    """按 Markdown 标题切节；没有标题就整篇算一节。"""
-    sections: list[tuple[str, list[str]]] = []
-    title = ""
-    body: list[str] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("#"):
-            if title or body:
-                sections.append((title, body))
-            title = stripped.lstrip("#").strip()
-            body = []
-        elif stripped:
-            body.append(stripped)
-    if title or body:
-        sections.append((title, body))
-    return sections or [("", [line.strip() for line in text.splitlines() if line.strip()])]
-
-
-def find_material(values: dict[str, str], workspace: Path, suffixes: tuple[str, ...]) -> Optional[Path]:
-    """按表单给的素材名找文件；没给就在工作区里挑第一个可读的素材。"""
-    name = (values.get("materials") or "").strip()
-    if name and "未指定" not in name:
-        path = (workspace / name) if not Path(name).is_absolute() else Path(name)
-        if path.is_file():
-            return path
-    for item in sorted(workspace.iterdir()):
-        if item.is_file() and item.suffix.lower() in suffixes:
-            return item
-    return None
-
-
-def run_report(values: dict[str, str], workspace: Path) -> OfflineResult:
-    """把素材按章节重新排成 .docx（原文重组，不总结）。"""
-    from peifeng_agent.backend.agent.executor.office_docs.tool.docx import docx
-
-    topic = (values.get("topic") or "汇报").strip()
-    material = find_material(values, workspace, (".md", ".txt", ".docx"))
-    if material is None:
-        raise RuntimeError("找不到素材文件（materials 指定，或把素材放到项目目录）")
-    sections = split_sections(material_text(material))
-
-    blocks: list[dict[str, Any]] = [{"type": "title", "text": topic}]
-    for title, body in sections:
-        if title:
-            blocks.append({"type": "heading", "level": 1, "text": title})
-        for line in body[:60]:
-            blocks.append({"type": "paragraph", "text": line})
-    output = f"{topic}.docx"
-    receipt = docx(file=output, blocks=blocks, overwrite=True, base_dir=str(workspace))
-
-    return OfflineResult(
-        preset="report_docx",
-        files=[str(workspace / output)],
-        summary=f"已生成 {output}（{len(sections)} 节，素材：{material.name}）\n{receipt.splitlines()[0]}",
-        notes=[
-            "离线模式：把素材**按章节重新排版**，没有做总结与改写。"
-            f"篇幅要求（{values.get('length') or '未填'}）只能人工调整。",
-        ],
-    )
-
-
-# ---------------------------------------------------------------- 素材 → PPT（重组原文）
-
-def run_deck(values: dict[str, str], workspace: Path) -> OfflineResult:
-    """把素材的每一节做成一页 PPT（标题 + 原文要点，不生成新内容）。"""
-    from peifeng_agent.backend.agent.executor.office_docs.tool.pptx import pptx
-
-    topic = (values.get("topic") or "汇报").strip()
-    material = find_material(values, workspace, (".md", ".txt", ".docx", ".pptx"))
-    if material is None:
-        raise RuntimeError("找不到素材文件（materials 指定，或把素材放到项目目录）")
-    sections = [item for item in split_sections(material_text(material)) if item[0] or item[1]]
-
-    wanted = 5
-    match = re.search(r"(\d+)\s*页", values.get("pages") or "")
-    if match:
-        wanted = max(2, min(30, int(match.group(1))))
-
-    slides: list[dict[str, Any]] = [{"type": "cover", "title": topic, "subtitle": material.stem}]
-    for title, body in sections[: max(1, wanted - 2)]:
-        bullets = [line[:80] for line in body[:6]]
-        slides.append({"type": "content", "title": title or topic, "bullets": bullets or ["（本节素材为空）"]})
-    slides.append({"type": "section", "title": "谢谢"})
-
-    # 空白画布必须给 theme（工具不带默认样式）；这里给一套中性的黑白
-    style = {
-        "font": {"latin": "Times New Roman", "east_asian": "宋体"},
-        "colors": {"primary": "1F3864", "secondary": "2B2D42", "light": "D9E2F3",
-                   "accent": "C00000", "white": "FFFFFF"},
-        "body_sizes": [[4, 24], [6, 20], [99, 18]],
-    }
-    output = f"{topic}.pptx"
-    receipt = pptx(file=output, slides=slides, style=style, overwrite=True, base_dir=str(workspace))
-
-    return OfflineResult(
-        preset="pptx_deck",
-        files=[str(workspace / output)],
-        summary=f"已生成 {output}（{len(slides)} 页，素材：{material.name}）\n{receipt.splitlines()[0]}",
-        notes=[
-            "离线模式：每页标题取自素材的章节标题、要点是**原文摘录**，没有改写或提炼。"
-            f"要求 {wanted} 页，实际按素材章节数出 {len(slides)} 页。",
-        ],
-    )
-
-
 # ---------------------------------------------------------------- 分发
 
 RUNNERS = {
     "chart_png": run_chart,
     "table_xlsx": run_table,
     "archive_files": run_archive,
-    "report_docx": run_report,
-    "pptx_deck": run_deck,
 }
 
 

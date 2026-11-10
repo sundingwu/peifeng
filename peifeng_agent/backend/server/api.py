@@ -105,6 +105,33 @@ def list_presets() -> dict:
     return {"presets": preset_catalog()}
 
 
+@router.post("/api/offline", response_model=schemas.OfflineResultBody)
+def run_offline(body: schemas.OfflineBody, app: AppEntry = Depends(get_app)) -> schemas.OfflineResultBody:
+    """离线跑一个预设：**不调用任何模型**，直接按固定流程产出文件。
+
+    给"断网 / 没有 API key / 不想花钱"的场景用。只接受**做得完整**的预设
+    （读表画图、清洗汇总、按类型归档）——需要生成内容的任务没有离线版。
+    """
+    from peifeng_agent.backend.workflow.offline import RUNNERS, run_preset
+
+    preset = (body.preset or "").strip()
+    if preset not in RUNNERS:
+        require(False, f"这个入口没有离线版：{preset or '（空）'}（可用：{'、'.join(sorted(RUNNERS))}）")
+    # 没选项目时 app.workspace 是 None：退到进程工作目录（就是项目根），
+    # 否则 Path(None) 会抛 TypeError，页面只能看到 500
+    base = Path(app.workspace) if app.workspace else Path.cwd()
+    folder = (body.folder or "").strip()
+    workspace = base if not folder else (Path(folder) if Path(folder).is_absolute() else base / folder)
+    workspace.mkdir(parents=True, exist_ok=True)
+    try:
+        result = run_preset(preset, dict(body.values or {}), workspace)
+    except Exception as error:  # noqa: BLE001 - 离线失败要把原因直接回给页面
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return schemas.OfflineResultBody(
+        files=list(result.files), summary=result.summary, notes=list(result.notes)
+    )
+
+
 @router.post("/api/task", response_model=schemas.OkResponse)
 def submit_task(body: schemas.SubmitTaskBody, app: AppEntry = Depends(get_app)) -> schemas.OkResponse:
     """在当前查看的会话里提交一个任务；**该会话**已有任务在跑时静默忽略。

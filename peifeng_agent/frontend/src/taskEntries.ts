@@ -6,6 +6,12 @@ export type TaskEntry = {
   description: string;
   deliverable: string;
   fields: (PresetField & { multiline?: boolean })[];
+  /**
+   * 填了这个就表示该入口有**离线版**：值是与后端一致的离线预设 id。
+   * 离线执行不调用任何模型（读表画图、清洗汇总、按类型归档这类规则确定的任务），
+   * 断网也能跑完；没有这个字段的入口必须联网。
+   */
+  offline?: string;
 };
 
 export const TASK_ENTRIES: TaskEntry[] = [
@@ -31,6 +37,30 @@ export const TASK_ENTRIES: TaskEntry[] = [
       { key: "topic", label: "绘图主题", required: true, placeholder: "请输入图件主题" },
       { key: "materials", label: "数据或参考素材", type: "file" },
       { key: "requirements", label: "绘图要求", multiline: true, placeholder: "图件类型、数据说明、标注、尺寸与输出格式" },
+    ],
+  },
+  {
+    id: "offline_chart", name: "表格出图", description: "读本地表格直接画图，不联网、不调用模型",
+    deliverable: "一张 .png 图表", offline: "chart_png",
+    fields: [
+      { key: "source", label: "数据文件", type: "file", required: true },
+      { key: "chart", label: "图型", placeholder: "柱状图 / 条形图 / 折线图 / 饼图（默认柱状图）" },
+      { key: "metric", label: "图主题", placeholder: "可不填，默认用文件名与数值列名" },
+    ],
+  },
+  {
+    id: "offline_table", name: "表格清洗汇总", description: "去重去空、按第一列分组求和，不联网、不调用模型",
+    deliverable: "一个 .xlsx（汇总页 + 明细页）", offline: "table_xlsx",
+    fields: [
+      { key: "source", label: "数据文件", type: "file", required: true },
+      { key: "output", label: "输出文件名", placeholder: "默认 汇总表.xlsx" },
+    ],
+  },
+  {
+    id: "offline_archive", name: "按类型归档", description: "把目录里的文件按扩展名归到子目录并出清单，不联网",
+    deliverable: "归档目录 + 归档清单.md", offline: "archive_files",
+    fields: [
+      { key: "target", label: "要整理的目录", placeholder: "项目目录下的子目录名，如 散落文件", required: true },
     ],
   },
 ];
