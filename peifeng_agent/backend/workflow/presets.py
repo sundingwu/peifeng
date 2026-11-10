@@ -23,6 +23,40 @@ _PLACEHOLDER = re.compile(r"\{(\w+)\}")
 #: 每个模板：id / name / description（入口上显示）/ fields（表单）/ requirement 与 steps（Plan 模板）
 PRESETS: list[dict[str, Any]] = [
     {
+        "id": "official_docx",
+        "name": "公文排版",
+        "description": "内容已经写好，只按公文格式排版（离线，不联网）",
+        "fields": [
+            {"key": "source", "label": "内容稿件", "type": "file", "required": True,
+             "placeholder": "按示例格式写的 .md / .txt"},
+        ],
+        "requirement": "把 {source} 按党政机关公文格式排版成 docx",
+        "steps": [
+            {
+                "worker": "office_docs",
+                "goal": "把 {source} 按公文格式（GB/T 9704）排版并落盘为 docx",
+                "expected_output": "排版后的 .docx：标题二号小标宋、正文三号仿宋、行距 28 磅",
+            }
+        ],
+    },
+    {
+        "id": "ppt_pages",
+        "name": "PPT 套版",
+        "description": "每页写什么已经定了，只按页面稿套成演示稿（离线，不联网）",
+        "fields": [
+            {"key": "source", "label": "页面稿", "type": "file", "required": True,
+             "placeholder": "按示例格式写的 .md / .txt"},
+        ],
+        "requirement": "把 {source} 套成 pptx",
+        "steps": [
+            {
+                "worker": "office_docs",
+                "goal": "把 {source} 的每页标题与要点套成 pptx",
+                "expected_output": "演示稿 .pptx：封面 + 每个「## 页标题」一页",
+            }
+        ],
+    },
+    {
         "id": "report_docx",
         "name": "写一份汇报文档",
         "description": "把素材整理成一份 .docx 汇报（正式版式）",

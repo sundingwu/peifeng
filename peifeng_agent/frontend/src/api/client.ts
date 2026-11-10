@@ -160,3 +160,11 @@ export async function runOffline(
   }
   return response.json();
 }
+
+/** 取格式示例的内容（后端 examples/ 目录下的文件）。 */
+export async function fetchExample(name: string): Promise<string> {
+  const response = await fetch(`/api/example?name=${encodeURIComponent(name)}`);
+  if (!response.ok) throw new Error(`示例读取失败（HTTP ${response.status}）`);
+  const body = (await response.json()) as { name: string; text: string };
+  return body.text;
+}

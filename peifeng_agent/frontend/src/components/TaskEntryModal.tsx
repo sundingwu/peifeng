@@ -2,6 +2,7 @@
 import { Button, Input, Modal } from "antd";
 import { useEffect, useMemo, useState } from "react";
 
+import { fetchExample } from "../api/client";
 import type { TaskEntry } from "../taskEntries";
 import { WorkspacePicker } from "./WorkspacePicker";
 
@@ -16,6 +17,9 @@ export function TaskEntryModal({
 }) {
   const [values, setValues] = useState<Record<string, string>>({});
   const [submitted, setSubmitted] = useState(false);
+  //: 格式示例：展开后显示该入口要求的稿件长什么样（离线排版的成败全在输入格式）
+  const [example, setExample] = useState("");
+  const [exampleOpen, setExampleOpen] = useState(false);
 
   // 每次打开都按模板的默认值重置：绝不把上一个模板的内容带进来
   useEffect(() => {
@@ -24,6 +28,8 @@ export function TaskEntryModal({
     for (const field of entry.fields) initial[field.key] = field.default ?? "";
     setValues(initial);
     setSubmitted(false);
+    setExample("");
+    setExampleOpen(false);
   }, [entry]);
 
   const missing = useMemo(() => {
@@ -34,6 +40,18 @@ export function TaskEntryModal({
   }, [entry, values]);
 
   if (!entry) return null;
+
+  const openExample = async () => {
+    if (!entry?.example) return;
+    setExampleOpen(true);
+    if (!example) {
+      try {
+        setExample(await fetchExample(entry.example));
+      } catch (error) {
+        setExample(`示例读取失败：${String(error)}`);
+      }
+    }
+  };
 
   return (
     <Modal
@@ -59,6 +77,17 @@ export function TaskEntryModal({
       ]}
     >
       <p className="preset-hint">{entry.description}</p>
+      {entry.example && (
+        <div className="preset-example">
+          <button type="button" className="preset-example-toggle" onClick={openExample}>
+            {exampleOpen ? "收起格式示例" : "查看格式示例"}
+          </button>
+          <span className="preset-example-hint">照着这个格式写稿件，排版才不会跑偏</span>
+          {exampleOpen && (
+            <pre className="preset-example-body">{example || "读取中…"}</pre>
+          )}
+        </div>
+      )}
       {entry.fields.map((field) => (
         <div key={field.key} className="preset-field">
           <label className="preset-label">

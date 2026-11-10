@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -84,23 +85,36 @@ def run_chart(values: dict[str, str], workspace: Path) -> OfflineResult:
     header, numeric, text_columns = numeric_columns(rows)
     if not numeric:
         raise RuntimeError(f"{path.name} 里没有能当数值的列（表头：{'、'.join(header)}）")
-    if not text_columns:
-        raise RuntimeError(f"{path.name} 里没有能当分类的列")
 
-    category_index = text_columns[0]
+    if text_columns:
+        # 有文本列：第一个文本列当分类（如「班级」「产品名」）
+        category_index = text_columns[0]
+        value_indexes = numeric
+    else:
+        # 全是数值列（实验数据常见：温度 × 转化率 × 选择性）：第一列当 X 轴，其余当系列
+        if len(numeric) < 2:
+            raise RuntimeError(
+                f"{path.name} 只有一列数值，缺少分类列：要么加一列「名称/班级」，"
+                "要么把 X 轴那列一起放进来（如温度、转化率、选择性）"
+            )
+        category_index = numeric[0]
+        value_indexes = numeric[1:]
+
     labels: list[str] = []
-    buckets: list[list[float]] = [[] for _ in numeric]
+    buckets: list[list[float]] = [[] for _ in value_indexes]
     for row in rows[1:]:
         cell = row[category_index] if category_index < len(row) else None
         if cell is None or not str(cell).strip():
             continue
-        labels.append(str(cell).strip())
-        for position, index in enumerate(numeric):
+        # 数值型分类（温度 300/350…）去掉多余小数：300.0 → 300
+        number = to_number(cell)
+        labels.append(f"{number:g}" if number is not None else str(cell).strip())
+        for position, index in enumerate(value_indexes):
             buckets[position].append(to_number(row[index] if index < len(row) else None) or 0.0)
     if not labels:
         raise RuntimeError("分类列全是空值，无法出图")
 
-    series = [{"name": header[index], "values": bucket} for index, bucket in zip(numeric, buckets)]
+    series = [{"name": header[index], "values": bucket} for index, bucket in zip(value_indexes, buckets)]
     chart_type = CHARTS.get((values.get("chart") or "柱状图").strip(), "bar")
     metric = (values.get("metric") or "").strip() or "、".join(item["name"] for item in series)
     title = f"{path.stem}｜{metric}"
@@ -247,9 +261,179 @@ def run_archive(values: dict[str, str], workspace: Path) -> OfflineResult:
     )
 
 
+# ---------------------------------------------------------------- 公文排版
+
+#: 党政机关公文格式（GB/T 9704-2012）常用参数。字号用磅值：二号=22、三号=16、四号=14。
+OFFICIAL_DOC_FORMAT = {
+    "page": {"top": 3.7, "bottom": 3.5, "left": 2.8, "right": 2.6},
+    "styles": {
+        "title": {"font": "方正小标宋简体", "font_east_asian": "方正小标宋简体", "size": 22, "align": "center"},
+        "heading1": {"font": "黑体", "font_east_asian": "黑体", "size": 16},
+        "heading2": {"font": "楷体", "font_east_asian": "楷体", "size": 16},
+        "body": {"font": "仿宋", "font_east_asian": "仿宋", "size": 16, "line_spacing": 28},
+        "signature": {"font": "仿宋", "font_east_asian": "仿宋", "size": 16, "align": "right"},
+    },
+}
+
+#: 稿件约定：``# 标题``、``## 一级标题``、``## 二级标题``、其余行是正文
+HEADING = re.compile(r"^(#{1,6})\s*(.+)$")
+
+
+def parse_manuscript(text: str) -> list[tuple[str, str]]:
+    """把稿件解析成 ``[(类型, 文本)]``：``title`` / ``heading1`` / ``heading2`` / ``body``。
+
+    落款按约定识别：最后几行里，以「年 月 日」结尾的那行算日期、它上面一行算署名。
+    """
+    blocks: list[tuple[str, str]] = []
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        stripped = line.strip()
+        if not stripped:
+            continue
+        match = HEADING.match(stripped)
+        if match:
+            level = len(match.group(1))
+            kind = "title" if level == 1 else ("heading1" if level == 2 else "heading2")
+            blocks.append((kind, match.group(2).strip()))
+            continue
+        blocks.append(("body", stripped))
+    return blocks
+
+
+def run_official_docx(values: dict[str, str], workspace: Path) -> OfflineResult:
+    """把按约定写好的稿件排成公文格式的 .docx（只排版，不改内容）。"""
+    from peifeng_agent.backend.agent.executor.office_docs.tool.docx import docx
+
+    name = (values.get("source") or "").strip()
+    if not name:
+        raise RuntimeError("official_docx 需要 source（内容稿件，.md 或 .txt）")
+    path = (workspace / name) if not Path(name).is_absolute() else Path(name)
+    if not path.is_file():
+        raise RuntimeError(f"稿件不存在：{path}")
+
+    blocks_in = parse_manuscript(path.read_text(encoding="utf-8"))
+    if not blocks_in:
+        raise RuntimeError(f"{path.name} 是空的")
+
+    blocks: list[dict[str, Any]] = []
+    for kind, content in blocks_in:
+        if kind == "title":
+            blocks.append({"type": "title", "text": content})
+        elif kind in ("heading1", "heading2"):
+            blocks.append({"type": "heading", "level": 1 if kind == "heading1" else 2, "text": content})
+        else:
+            # 落款：以「年…月…日」结尾的短行按右对齐处理
+            if re.search(r"\d{4}\s*年.*?\d{1,2}\s*月.*?\d{1,2}\s*日", content) and len(content) <= 40:
+                blocks.append({"type": "paragraph", "style": "signature", "text": content})
+            else:
+                blocks.append({"type": "paragraph", "text": content})
+
+    output = f"{path.stem}_公文.docx"
+    receipt = docx(file=output, blocks=blocks, style=OFFICIAL_DOC_FORMAT,
+                   overwrite=True, base_dir=str(workspace))
+
+    return OfflineResult(
+        preset="official_docx",
+        files=[str(workspace / output)],
+        summary=(
+            f"已按公文格式排版 {output}：标题 {sum(1 for k, _ in blocks_in if k == 'title')} 个、"
+            f"标题层级 {sum(1 for k, _ in blocks_in if k.startswith('heading'))} 个、"
+            f"正文 {sum(1 for k, _ in blocks_in if k == 'body')} 段"
+        ),
+        notes=[
+            "只做排版：字体（小标宋/黑体/楷体/仿宋）、字号（二/三号）、行距 28 磅、页边距均按 GB/T 9704 设置。",
+            "内容一个字都没改——要改内容请改稿件后重跑。",
+        ],
+    )
+
+
+# ---------------------------------------------------------------- PPT 套版
+
+#: 页面稿约定：``# 封面标题`` 后跟 ``> 副标题``；``## 页标题`` 后跟 ``- 要点``
+COVER = re.compile(r"^#\s+(.+)$")
+PAGE = re.compile(r"^##\s+(.+)$")
+BULLET = re.compile(r"^[-*]\s+(.+)$")
+SUB = re.compile(r"^>\s*(.+)$")
+
+
+def parse_pages(text: str) -> tuple[str, str, list[tuple[str, list[str]]]]:
+    """把页面稿解析成 ``(封面标题, 副标题, [(页标题, [要点])])``。"""
+    cover_title = ""
+    subtitle = ""
+    pages: list[tuple[str, list[str]]] = []
+    current: list[str] | None = None
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        match_cover = COVER.match(stripped)
+        if match_cover and not cover_title and not pages:
+            cover_title = match_cover.group(1).strip()
+            continue
+        match_page = PAGE.match(stripped)
+        if match_page:
+            current = []
+            pages.append((match_page.group(1).strip(), current))
+            continue
+        match_sub = SUB.match(stripped)
+        if match_sub and not subtitle and not pages:
+            subtitle = match_sub.group(1).strip()
+            continue
+        match_bullet = BULLET.match(stripped)
+        if match_bullet and current is not None:
+            current.append(match_bullet.group(1).strip())
+            continue
+        if current is not None:
+            current.append(stripped)
+    return cover_title, subtitle, pages
+
+
+def run_ppt_pages(values: dict[str, str], workspace: Path) -> OfflineResult:
+    """把按约定写好的页面稿套成 .pptx（只排版，不改文字）。"""
+    from peifeng_agent.backend.agent.executor.office_docs.tool.pptx import pptx
+
+    name = (values.get("source") or "").strip()
+    if not name:
+        raise RuntimeError("ppt_pages 需要 source（页面稿，.md 或 .txt）")
+    path = (workspace / name) if not Path(name).is_absolute() else Path(name)
+    if not path.is_file():
+        raise RuntimeError(f"页面稿不存在：{path}")
+
+    cover, subtitle, pages = parse_pages(path.read_text(encoding="utf-8"))
+    if not cover and not pages:
+        raise RuntimeError(f"{path.name} 里没有识别到页面（用「# 封面标题」「## 页标题」开头）")
+
+    slides: list[dict[str, Any]] = []
+    if cover:
+        slides.append({"type": "cover", "title": cover, "subtitle": subtitle})
+    for title, bullets in pages:
+        slides.append({"type": "content", "title": title, "bullets": bullets or ["（本页无要点）"]})
+
+    style = {
+        "font": {"latin": "Times New Roman", "east_asian": "宋体"},
+        "colors": {"primary": "1F3864", "secondary": "2B2D42", "light": "D9E2F3",
+                   "accent": "C00000", "white": "FFFFFF"},
+        "body_sizes": [[4, 24], [6, 20], [99, 18]],
+    }
+    output = f"{path.stem}_演示稿.pptx"
+    receipt = pptx(file=output, slides=slides, style=style, overwrite=True, base_dir=str(workspace))
+
+    return OfflineResult(
+        preset="ppt_pages",
+        files=[str(workspace / output)],
+        summary=f"已生成 {output}：{len(slides)} 页（封面 {1 if cover else 0} + 内容页 {len(pages)}）",
+        notes=[
+            "只做排版：每页标题与要点都取自页面稿原文，一个字没改。",
+            "图、表、备注这类页面稿表达不了的内容，需要在线模式或手动补。",
+        ],
+    )
+
+
 # ---------------------------------------------------------------- 分发
 
 RUNNERS = {
+    "official_docx": run_official_docx,
+    "ppt_pages": run_ppt_pages,
     "chart_png": run_chart,
     "table_xlsx": run_table,
     "archive_files": run_archive,

@@ -105,6 +105,31 @@ def list_presets() -> dict:
     return {"presets": preset_catalog()}
 
 
+@router.get("/api/example")
+def get_example(name: str = "") -> dict:
+    """返回格式示例的内容（放在项目根 examples/ 下）。
+
+    入口弹窗里展示它，用户照着一个格式写稿件就能被正确解析——
+    离线排版的成败全在"输入格式对不对"，示例比文字说明有用。
+    """
+    from pathlib import Path as _Path
+
+    clean = _Path((name or "").strip()).name
+    if not clean:
+        require(False, "需要 name（示例文件名）")
+    folder = _Path(__file__).resolve().parents[3] / "examples"
+    target = folder / clean
+    if not target.is_file():
+        require(False, f"示例不存在：{clean}")
+    if target.suffix.lower() == ".xlsx":
+        # 表格示例给出表头与首行，让人看清列结构
+        from peifeng_agent.backend.utils.chart_kit import read_table
+
+        rows = read_table(target)[:6]
+        return {"name": clean, "text": "\n".join(" | ".join(str(c) for c in row) for row in rows)}
+    return {"name": clean, "text": target.read_text(encoding="utf-8")}
+
+
 @router.post("/api/offline", response_model=schemas.OfflineResultBody)
 def run_offline(body: schemas.OfflineBody, app: AppEntry = Depends(get_app)) -> schemas.OfflineResultBody:
     """离线跑一个预设：**不调用任何模型**，直接按固定流程产出文件。

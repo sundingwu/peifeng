@@ -2453,3 +2453,42 @@ body {
   opacity: 0.75;
   pointer-events: none;
 }
+
+/* 入口弹窗里的格式示例：折叠显示，照着写稿件 */
+.preset-example {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+}
+
+.preset-example-toggle {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--accent-hover);
+  font: 600 12px/1.6 inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.preset-example-hint {
+  margin-left: 8px;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.preset-example-body {
+  margin: 8px 0 0;
+  padding: 8px;
+  max-height: 220px;
+  overflow: auto;
+  border-radius: var(--radius-xs);
+  background: var(--bg);
+  font: 11px/1.7 var(--mono);
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
