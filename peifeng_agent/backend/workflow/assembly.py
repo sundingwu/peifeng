@@ -193,7 +193,7 @@ def build_environment(settings: Settings, workspace: Path, session_dir: Path, wo
             f"<项目目录>：{workspace}（用户的工作文件夹：产出文件写这里，用户也在这里取文件；"
             "用户问「目录下有什么」「当前目录」时指的就是它）",
             f"<中间目录>：{work_dir}（运行期间的脚本与临时文件，不交给用户）",
-            f"<会话目录>：{session_dir}（summary.json / detail.json 所在目录）",
+            f"<会话目录>：{session_dir}（summary.json 与 detail/ 明细目录所在处）",
             "</运行环境>",
         ]
     )

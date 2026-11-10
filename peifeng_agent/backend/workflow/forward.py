@@ -636,14 +636,14 @@ def build_session_summary(state: SessionState, *, with_paths: bool = True) -> st
         lines.append("  任务摘要：" + overview)
         if summary.files:
             lines.append("  文件：" + "、".join(summary.files))
-        # 已完成步骤的正文在哪：新记录给落盘路径，旧记录（无 output_file）给 detail.json 的下钻路径。
+        # 已完成步骤的正文在哪：有落盘路径就给路径，没有就给该步的明细文件。
         # 没有这行，下游只知道"这步做过"，却不知道正文怎么取——就是"重复劳动或凭空编"的起点。
         readable = [
             f"步骤{step.index + 1}（{step.status}，{step.worker or '未指定'}）→ "
             + (
                 step.output_file
                 if step.output_file
-                else f'read(json_path="tasks.{summary.task_seq}.steps[{step.index}].attempts[-1].result.content")'
+                else f"detail/task{summary.task_seq}_step{step.index + 1:02d}.json"
             )
             for step in summary.steps
             if step.output_file or step.status == "completed"
@@ -663,7 +663,10 @@ def build_session_summary(state: SessionState, *, with_paths: bool = True) -> st
                 entries = [{**entry, "messages": operation_messages(entry.get("messages", []))} for entry in entries]
             if entries:
                 lines.append("  中断步骤完整操作记录：" + json.dumps(entries, ensure_ascii=False))
-        lines.append(f'  明细：read("<会话目录>/detail.json", json_path="tasks.{summary.task_seq}")')
+        lines.append(
+            f'  明细：read(dir="<会话目录>/detail", grep="task{summary.task_seq}_step")'
+            "（每步一个文件，直接全量读即可）"
+        )
     return "\n".join(lines)
 
 
@@ -675,7 +678,9 @@ def build_task_summary(state: TaskState) -> TaskSummary:
         original_request=state.original_request,
         task_summary=task_overview(state.status, state.steps, state.content, state.abort_reason or ""),
         plan=state.plan,
-        steps=list(state.steps),
+        # 摘要里**只留步骤摘要**：attempts 里的工具调用与输出在 detail/taskN_stepMM.json，
+        # 否则 summary.json 会跟着任务越写越大（实测一个单步任务就 46 KB）
+        steps=[step.model_copy(update={"attempts": []}) for step in state.steps],
         status=state.status,
         content=state.content,
         files=list(state.files),
@@ -1483,7 +1488,11 @@ class TaskOrchestrator:
         return str(path)
 
     def write_detail(self) -> int:
-        """把任务明细按任务号存进 detail.json，返回任务号（未绑定会话时为 0）。"""
+        """把每个步骤的明细各写一个文件（``detail/task{N}_step{MM}.json``），返回任务号。
+
+        按步骤拆开：单个文件很小，需要哪一步就直接全量读——不用按字段下钻，
+        也不会出现"整份 detail 越读越大"的问题。
+        """
         if self.detail_store is None or not self.session.name:
             return 0
         detail = self.task.to_detail()

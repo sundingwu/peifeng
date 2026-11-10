@@ -4,7 +4,6 @@
 
 - path 是文件：内容按行输出（带行号，可用 offset/limit 分页）；``.docx``/``.xlsx``/``.pptx`` 由文档库解析为文本
 - path 是目录：列出条目（名称、类型、大小、修改时间），可用 pattern 通配过滤、depth 递归
-- 文件是 JSON 且给了 ``json_path``：按键/下标只取那一段（如 ``tasks.3.steps[0].goal``），支持 ``*`` 与 ``|``
 - 给了 ``grep``：按行检索关键词或正则，返回命中行号与内容；path 是目录时按 depth 跨目录递归检索
 
 工具约定：文件头 information 元数据 + 与 name 同名的业务函数；成功 return 文本，失败抛 RuntimeError。
@@ -36,8 +35,6 @@ MAX_GREP_FILES = 2000
 
 #: grep 上下文最多几行
 MAX_CONTEXT = 3
-#: 不允许全量读的会话记录：读一次就会被写回它自己（越读越大），只能按 json_path 取字段
-PROTECTED_JSON = ("detail.json", "summary.json")
 
 #: 一次 paths 批量读的上限：纯本地读取，只防呆（返回量另有 MAX_BATCH_CHARS 兜底）
 MAX_BATCH = 0  #: 0 = 不限条数（输出量另有上限保护）
@@ -50,33 +47,29 @@ _JSON_TOKEN = re.compile(r"([^.\[\]]+)|\[(-?\d+|\*)\]")
 information = {
     "name": "read",
     "description": (
-        "读文件或列目录——**两个目标两套参数**，看参数名就知道走哪条路。\n"
-        "【读文件】传 file（或 paths 一次读多个）：不给 grep → 全文，可 offset/limit 分段；"
-        "给 grep → 只回命中的行（关键词或 /正则/）；给 json_path → 按路径取字段"
-        "（tasks.1.status，支持 * 与 |）。\n"
-        "【列目录】传 dir：不给 grep → 列出条目；给 .md 这类后缀 → 只列这类文件；"
-        "给关键词或正则 → 在文件内容里搜；recursive=true 表示**一直往下翻**，不设层数限制。\n"
-        "grep 三种写法自动识别：.md 这类是后缀（目录用）、/正则/ 或含 [ ] ( ) | ^ $ * + ? \\ 是正则、其余是关键词。\n"
-        "detail.json / summary.json 是会话记录，**不能整份读**（读到的内容会写回它自己，越读越大），"
-        "要用 json_path 指定字段。\n"
-        "要一次读多个文件就用 paths（个数不限），不要一个文件一次调用。"
+        "读文件或列目录——两套参数，看参数名就知道走哪条路。\n"
+        "【读文件】file（或 paths 一次读多个）：不给 grep → 全文，可 offset/limit 分段；"
+        "给 grep → 只回命中的行（关键词或 /正则/）。\n"
+        "【列目录】dir：不给 grep → 列出条目；给 .md 这类后缀 → 只列这类文件；"
+        "给关键词或正则 → 在文件内容里搜；recursive=true 表示一直往下翻，不设层数限制。\n"
+        "grep 三种写法自动识别：.md 这类是后缀（目录用）、/正则/ 或含 [ ] ( ) | ^ $ * + ? \\ 是正则、其余是关键词。"
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "file": {"type": "string", "description": "要读的文件路径（与 dir 二选一）"},
-            "dir": {"type": "string", "description": "要列的目录路径（与 file 二选一）"},
+            # ---- 二选一：读文件 / 列目录 ----
+            "file": {"type": "string", "description": "【读文件】要读的文件路径（与 dir 二选一）"},
+            "dir": {"type": "string", "description": "【列目录】要列的目录路径（与 file 二选一）"},
             "paths": {"type": "array", "items": {"type": "string"},
-                      "description": "一次读多个文件（与 file 二选一），每段结果前带 ===== 路径 ====="},
+                      "description": "【读文件】一次读多个文件（与 file 二选一），结果按 ===== 路径 ===== 分段"},
+            # ---- 筛选 ----
             "grep": {"type": "string",
-                     "description": "读文件时是内容关键词/正则；列目录时是后缀(.md)或关键词/正则；不给就是全部"},
-            "offset": {"type": "integer", "description": "起始行号（1 起；仅读文件；不传从第 1 行开始）"},
-            "limit": {"type": "integer", "description": "最多返回行数（仅读文件；不传就返回全部）"},
-            "recursive": {"type": "boolean", "description": "列目录时是否递归到底（true = 不限层数）"},
-            "json_path": {"type": "string",
-                          "description": "从 JSON 按键/下标取值（仅读文件），如 tasks.1.steps[0].goal，支持 * 与 |"},
-            "path": {"type": "string",
-                     "description": "兼容写法：自动判断是文件还是目录，等价于 file 或 dir"},
+                     "description": "【通用】筛选：读文件时是内容关键词/正则；列目录时是后缀(.md)或关键词/正则"},
+            # ---- 仅读文件 ----
+            "offset": {"type": "integer", "description": "【读文件】起始行号（1 起；不传从第 1 行开始）"},
+            "limit": {"type": "integer", "description": "【读文件】最多返回行数（不传就返回全部）"},
+            # ---- 仅列目录 ----
+            "recursive": {"type": "boolean", "description": "【列目录】是否递归到底（true = 不限层数）"},
         },
         "required": [],
     },
@@ -116,95 +109,50 @@ def read(
     offset: Optional[int] = None,
     limit: Optional[int] = None,
     recursive: bool = False,
-    json_path: str = "",
-    path: str = "",
     base_dir=None,
-    **_legacy: Any,
 ) -> str:
-    """读文件或列目录——**两个目标两套参数**，看参数名就知道走哪条路。
+    """读文件或列目录——两套参数，看参数名就知道走哪条路。
 
-    **读文件**（``file``，或 ``paths`` 一次读多个）：
+    **读文件**（``file``，或 ``paths`` 一次读多个）
     - 不给 ``grep`` → 全文，可用 ``offset`` / ``limit`` 分段
     - 给关键词或正则 → 只回命中的行
-    - 给 ``json_path`` → 按路径取字段（``tasks.1.status``，支持 ``*`` 与 ``|``）
 
-    **列目录**（``dir``）：
+    **列目录**（``dir``）
     - 不给 ``grep`` → 列出条目
     - 给后缀（``.md``）→ 只列这类文件
     - 给关键词或正则 → 在文件内容里搜
-    - ``recursive=true`` → **一直往下翻**，不设层数限制
-
-    ``path`` 是兼容写法：它自己会判是文件还是目录，等价于 ``file`` 或 ``dir``。
+    - ``recursive=true`` → 一直往下翻，不设层数限制
     """
-    # 旧参数兼容：这些键已从 schema 去掉，但模型偶尔还按老习惯传；
-    # 不匹配会抛 TypeError 把整步打挂，所以吸收并按新语义映射。
-    if _legacy:
-        legacy_pattern = str(_legacy.get("pattern") or "").strip()
-        if legacy_pattern and not str(grep or "").strip():
-            grep = legacy_pattern
-        legacy_depth = _legacy.get("depth")
-        if legacy_depth is not None and not recursive:
-            try:
-                recursive = int(legacy_depth) > 1
-            except (TypeError, ValueError):
-                pass
-        if _legacy.get("regex") and str(grep or "").strip():
-            grep = f"/{str(grep).strip().strip('/')}/"
-
-    # ---- 读文件（多个）----
     batch = as_text_list(paths, "paths", MAX_BATCH)
     if batch:
-        return read_batch(batch, offset=offset, limit=limit, json_path=json_path,
-                          grep=grep, base_dir=base_dir)
+        return read_batch(batch, offset=offset, limit=limit, grep=grep, base_dir=base_dir)
 
-    target_text = str(file or dir or path or "").strip()
+    target_text = str(file or dir or "").strip()
     if not target_text:
         raise RuntimeError("read 需要 file（读文件）、dir（列目录）或 paths（多个文件）之一")
     target = resolve(target_text, base_dir)
-
-    # 明确给了 dir 就是目录模式；给了 file 就是文件模式；只给 path 时自己判
-    if dir:
-        mode = "dir"
-    elif file:
-        mode = "file"
-    else:
-        mode = "dir" if target.is_dir() else "file"
-
     kind, cleaned = classify_grep(grep)
 
     # ---- 列目录 ----
-    if mode == "dir":
+    if dir:
         if not target.is_dir():
-            raise RuntimeError(f"目录不存在：{dir or path}")
+            raise RuntimeError(f"目录不存在：{dir}")
         depth = _RECURSIVE_DEPTH if recursive else 1
         if kind == "suffix":
             return list_entries(target, f"*{cleaned}", depth)
         if kind in ("keyword", "regex"):
             return grep_lines(target, cleaned, kind == "regex", 0, depth, "*",
-                              max(1, min(as_int(limit, "limit", MAX_GREP_HITS), MAX_GREP_HITS)),
-                              dir or path)
+                              max(1, min(as_int(limit, "limit", MAX_GREP_HITS), MAX_GREP_HITS)), dir)
         return list_entries(target, "*", depth)
 
     # ---- 读文件 ----
     if not target.is_file():
-        raise RuntimeError(f"文件不存在：{file or path}")
+        raise RuntimeError(f"文件不存在：{file}")
     if is_image(target):
         return image_info(target)
-    trace = str(json_path or "").strip()
-    if trace:
-        return read_json_path(target, trace)
     if kind in ("keyword", "regex"):
         return grep_lines(target, cleaned, kind == "regex", 0, 1, "*",
-                          max(1, min(as_int(limit, "limit", MAX_GREP_HITS), MAX_GREP_HITS)),
-                          file or path)
-    # 会话记录禁止整份读：读到的内容会被写回它自己，越读越大
-    if target.name.lower() in PROTECTED_JSON:
-        raise RuntimeError(
-            f"{target.name} 是全量会话记录，**不能整份读**——读到的内容会被写回它自己，"
-            "文件越读越大、永远读不完。请用 json_path 只取需要的字段，例如：\n"
-            "  read(file=\"...detail.json\", json_path=\"tasks.1.steps[0].attempts[-1].result.content\")\n"
-            "  read(file=\"...detail.json\", json_path=\"tasks.*.status\")"
-        )
+                          max(1, min(as_int(limit, "limit", MAX_GREP_HITS), MAX_GREP_HITS)), file)
     return format_lines(str(target), content_lines(target), offset, limit)
 
 
@@ -213,16 +161,14 @@ def read_batch(
     *,
     offset: Optional[int] = None,
     limit: Optional[int] = None,
-    json_path: str = "",
     grep: str = "",
     base_dir=None,
 ) -> str:
-    """一次读多个路径：每段前带 ``===== 路径 =====``，名称与参数完全一致才合并。"""
+    """一次读多个文件：每段前带 ``===== 路径 =====``。"""
     blocks: List[str] = []
     for item in items:
         try:
-            body = read(file=item, offset=offset, limit=limit, json_path=json_path,
-                        grep=grep, base_dir=base_dir)
+            body = read(file=item, offset=offset, limit=limit, grep=grep, base_dir=base_dir)
         except RuntimeError as error:
             body = f"错误：{error}"
         blocks.append(f"===== {item} =====\n{body}")
@@ -281,6 +227,17 @@ def scan(root: Path, matcher, context: int, pattern: str, depth: int, top: int) 
             # pattern 只过滤文件名：不能用 glob(pattern) 取条目，否则子目录也被挡掉、递归失效
             if not fnmatch(entry.name, pattern):
                 continue
+            try:
+                shown = f"{entry.relative_to(root).as_posix()}"
+            except ValueError:
+                shown = entry.name
+            # 文件名本身命中就算一条：`read(dir="detail", grep="task1_step")` 要能直接列出文件，
+            # 而不是去这些文件的内容里找这个字符串
+            if matcher.search(entry.name):
+                hits.append(f"{shown}  （文件名匹配）")
+                matched += 1
+                if matched >= top:
+                    return hits, matched, scanned, True
             if not is_readable(entry):
                 continue
             scanned += 1
@@ -290,11 +247,7 @@ def scan(root: Path, matcher, context: int, pattern: str, depth: int, top: int) 
                 lines = content_lines(entry)
             except Exception:  # noqa: BLE001 - 单个文件读不了就跳过
                 continue
-            try:
-                prefix = f"{entry.relative_to(root).as_posix()}:"
-            except ValueError:
-                prefix = f"{entry.name}:"
-            rows, count = match_lines(lines, matcher, context, prefix=prefix)
+            rows, count = match_lines(lines, matcher, context, prefix=f"{shown}:")
             hits.extend(rows)
             matched += count
             if matched >= top:
@@ -408,70 +361,6 @@ def walk(directory: Path, pattern: str, depth: int, prefix: str):
         return
     for child in children:
         yield from walk(child, pattern, depth - 1, prefix=f"  {prefix}")
-
-
-def read_json_path(target: Path, trace: str) -> str:
-    """按 ``a.b[0].c`` 取子值；支持 ``*`` 通配与 ``|`` 多路径，一次拿到一批字段。"""
-    try:
-        payload = json.loads(target.read_text(encoding="utf-8"))
-    except ValueError as error:
-        raise RuntimeError(f"这不是合法 JSON，无法按 json_path 读取：{target.name}（{error}）") from None
-    traces = [part.strip() for part in str(trace).split("|") if part.strip()]
-    if not traces:
-        raise RuntimeError("json_path 不能为空")
-    if len(traces) == 1:
-        return render_json_value(resolve_json_path(payload, traces[0]), traces[0])
-    blocks = []
-    for one in traces:
-        blocks.append(f"--- json_path={one}\n" + render_json_value(resolve_json_path(payload, one), one))
-    return "\n\n".join(blocks)
-
-
-def resolve_json_path(payload: Any, trace: str) -> Any:
-    """逐段下钻；键不存在或下标越界时给出可用的键/范围。
-
-    ``*`` 表示这一层的所有键或所有项：``tasks.*.requirement`` 返回 ``{"1": "...", "2": "..."}``。
-    """
-    return descend(payload, _JSON_TOKEN.findall(trace), trace)
-
-
-def descend(current: Any, tokens: list, trace: str) -> Any:
-    """递归下钻（``*`` 时对每个键或项各展开一份，结果保持原有形状）。"""
-    if not tokens:
-        return current
-    (name, index), rest = tokens[0], tokens[1:]
-    if name == "*" or index == "*":
-        if isinstance(current, dict):
-            return {key: descend(value, rest, trace) for key, value in current.items()}
-        if isinstance(current, list):
-            return [descend(item, rest, trace) for item in current]
-        raise RuntimeError(f"json_path={trace} 的 * 需要作用在对象或数组上，当前是 {type(current).__name__}")
-    if index != "":
-        if not isinstance(current, list):
-            raise RuntimeError(f"json_path={trace} 的 [{index}] 需要作用在数组上，当前是 {type(current).__name__}")
-        position = int(index)
-        if position < 0:
-            # 负下标从末尾数（[-1] 是最后一项）：多次尝试时"最后一次尝试"才是要的正文
-            position += len(current)
-        if not 0 <= position < len(current):
-            raise RuntimeError(f"json_path={trace} 的下标 [{index}] 超出范围（该数组共 {len(current)} 项）")
-        return descend(current[position], rest, trace)
-    if not isinstance(current, dict):
-        raise RuntimeError(f"json_path={trace} 的 .{name} 需要作用在对象上，当前是 {type(current).__name__}")
-    if name not in current:
-        available = "、".join(list(current)[:12]) or "（无）"
-        raise RuntimeError(f"json_path={trace} 里没有 {name}（这一层可用：{available}）")
-    return descend(current[name], rest, trace)
-
-
-def render_json_value(value: Any, trace: str) -> str:
-    """字符串按行输出（与文本模式一致），对象与数组按 JSON 输出。"""
-    if isinstance(value, str):
-        return format_lines(f"json_path={trace}", value.splitlines(), None, None)
-    if isinstance(value, (dict, list)):
-        text = json.dumps(value, ensure_ascii=False, indent=2)
-        return format_lines(f"json_path={trace}", text.splitlines(), None, None)
-    return f"json_path={trace} = {value!r}"
 
 
 def format_lines(path: str, lines: list[str], offset: Optional[int], limit: Optional[int]) -> str:

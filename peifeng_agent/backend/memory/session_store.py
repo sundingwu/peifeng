@@ -28,7 +28,8 @@ logger = logging.getLogger(__name__)
 
 #: 会话目录内的固定文件名
 SUMMARY_FILE = "summary.json"
-DETAIL_FILE = "detail.json"
+#: 明细目录名：每个任务每个步骤一个文件（task{任务号}_step{步骤号}.json）
+DETAIL_DIR = "detail"
 
 #: 会话内放中间产物的目录名
 INTERNAL_DIR = "internal"
@@ -260,64 +261,81 @@ class SummaryStore:
 
 
 class DetailStore:
-    """任务明细文件（``detail.json``）：按任务号索引的完整上下文。
+    """步骤明细（``detail/task{任务号}_step{步骤号}.json``）：一个步骤一个文件。
 
-    结构：``{"version": 1, "tasks": {"1": {...TaskDetail...}, "2": {...}}}``——一个任务一个键，
-    所以"取某个任务的明细"就是按键取，不需要行号，也不需要解析整个文件。写入走临时文件 +
-    原子替换（见 :func:`write_json`）。
+    **为什么拆到步骤**：整份 ``detail.json`` 会随任务越写越大，读一次就把内容写回它自己，
+    越读越大、永远读不完。拆成步骤文件后每个都很小，需要哪一步就直接全量读——
+    不需要按字段下钻，也不需要"禁止整份读"这种补丁。
+
+    任务级的整体信息（需求、计划、状态）在 ``summary.json`` 里，不在这里重复存。
     """
 
-    def __init__(self, session_dir, file_name: str = DETAIL_FILE) -> None:
+    def __init__(self, session_dir, folder_name: str = DETAIL_DIR) -> None:
         self.session_root = Path(session_dir)
-        self.file_name = file_name
+        self.folder_name = folder_name
 
-    def path_for(self, session_name: str) -> Path:
-        """指定会话的明细文件路径。"""
-        return self.session_root / session_name / self.file_name
+    def folder_for(self, session_name: str) -> Path:
+        """指定会话的明细目录。"""
+        return self.session_root / session_name / self.folder_name
 
-    def save(self, session_name: str, detail: TaskDetail) -> int:
-        """写入一个任务的明细（同号覆盖），返回其任务号。"""
-        path = self.path_for(session_name)
+    def path_for(self, session_name: str, task_seq: int, index: int) -> Path:
+        """某一步的明细文件路径。"""
+        return self.folder_for(session_name) / f"task{int(task_seq)}_step{int(index) + 1:02d}.json"
+
+    def save_step(
+        self,
+        session_name: str,
+        task_seq: int,
+        requirement: str,
+        step: Any,
+    ) -> Path:
+        """写入一个步骤的明细（同号覆盖）。
+
+        文件里带上 ``task_seq`` 与 ``requirement``：单个文件就自包含"这是哪个任务的第几步、
+        要做什么"，评审与下一步读它时不必再去找别的文件。
+        """
+        target = self.path_for(session_name, task_seq, int(getattr(step, "index", 0)))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "task_seq": int(task_seq),
+            "requirement": str(requirement or ""),
+            "step": step.model_dump(exclude_none=True) if hasattr(step, "model_dump") else dict(step),
+        }
         with _DETAIL_LOCK:
-            payload = read_detail_payload(path)
-            payload["tasks"][str(detail.task_seq)] = detail.model_dump(exclude_none=True)
-            write_json(path, payload)
-        return detail.task_seq
+            write_json(target, payload)
+        return target
 
-    def load(self, session_name: str, task: int) -> Optional[dict]:
-        """读取指定任务号的明细；不存在返回 None。"""
-        return read_detail_payload(self.path_for(session_name))["tasks"].get(str(int(task)))
+    def save(self, session_name: str, detail: Any) -> int:
+        """写入一个任务的**所有**步骤明细，返回任务号（``write_detail`` 的入口）。"""
+        requirement = str(getattr(detail, "requirement", "") or "")
+        task_seq = int(getattr(detail, "task_seq", 0))
+        for step in getattr(detail, "steps", []) or []:
+            self.save_step(session_name, task_seq, requirement, step)
+        return task_seq
+
+    def load_step(self, session_name: str, task_seq: int, index: int) -> Optional[dict]:
+        """读取某一步的明细；不存在返回 None。"""
+        target = self.path_for(session_name, task_seq, index)
+        if not target.is_file():
+            return None
+        return read_json(target)
+
+    def steps(self, session_name: str) -> List[str]:
+        """该会话已有的明细文件（按名字排序，便于人直接看）。"""
+        folder = self.folder_for(session_name)
+        if not folder.is_dir():
+            return []
+        return sorted(item.name for item in folder.glob("task*_step*.json"))
 
     def tasks(self, session_name: str) -> List[int]:
-        """该会话已有明细的任务号（升序）。"""
-        return sorted(int(key) for key in read_detail_payload(self.path_for(session_name))["tasks"])
-
-
-def read_detail_payload(path) -> dict:
-    """读取明细文件，统一成 ``{"version": int, "tasks": {任务号字符串: 记录}}``。
-
-    兼容早先的 JSONL 布局（一行一个任务）：读到那种文件时按行解析成同样结构，
-    于是 ``read_detail`` 工具与 ``DetailStore`` 只有一种内存形状。
-    """
-    target = Path(path)
-    if not target.is_file():
-        return {"version": DETAIL_VERSION, "tasks": {}}
-    payload = read_json(target)
-    if isinstance(payload, dict) and isinstance(payload.get("tasks"), dict):
-        return {"version": int(payload.get("version") or DETAIL_VERSION), "tasks": dict(payload["tasks"])}
-    tasks: dict[str, Any] = {}
-    for line in target.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            record = json.loads(line)
-        except ValueError:
-            logger.debug("跳过无法解析的明细行：%s", line[:80])
-            continue
-        if isinstance(record, dict) and record.get("task_seq") is not None:
-            tasks[str(int(record["task_seq"]))] = record
-    return {"version": DETAIL_VERSION, "tasks": tasks}
+        """该会话已有明细的任务号（升序去重）。"""
+        numbers: set[int] = set()
+        for name in self.steps(session_name):
+            try:
+                numbers.add(int(name.split("task", 1)[1].split("_", 1)[0]))
+            except (IndexError, ValueError):
+                continue
+        return sorted(numbers)
 
 
 @lru_cache(maxsize=512)
