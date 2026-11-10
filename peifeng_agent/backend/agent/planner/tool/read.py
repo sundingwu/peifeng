@@ -114,6 +114,7 @@ def read(
     recursive: bool = False,
     json_path: str = "",
     base_dir=None,
+    **_legacy: Any,
 ) -> str:
     """读文件内容、列出目录、按条件筛选，或从 JSON 取字段。
 
@@ -126,6 +127,20 @@ def read(
 
     多个目标用 ``paths`` 一次传完（个数不限）；相对路径以 base_dir（项目目录）为基准。
     """
+    # 旧参数兼容：这些键已从 schema 里去掉，但模型偶尔还会按老习惯传；
+    # 直接参数不匹配会抛 TypeError 把整步打挂，所以在这里吸收并按新语义映射。
+    if _legacy:
+        pattern = str(_legacy.get("pattern") or "").strip()
+        if pattern and not str(grep or "").strip():
+            grep = pattern
+        depth = _legacy.get("depth")
+        if depth is not None and not recursive:
+            try:
+                recursive = int(depth) > 1
+            except (TypeError, ValueError):
+                pass
+        if _legacy.get("regex") and str(grep or "").strip():
+            grep = f"/{str(grep).strip().strip('/')}/"
     batch = as_text_list(paths, "paths", MAX_BATCH)
     if batch:
         return read_batch(
