@@ -50,30 +50,33 @@ _JSON_TOKEN = re.compile(r"([^.\[\]]+)|\[(-?\d+|\*)\]")
 information = {
     "name": "read",
     "description": (
-        "读文件或列出目录，一个 grep 统一筛选。\n"
-        "① 文件：不给 grep → 全文（可 offset/limit 分段）；给关键词或正则 → 只回命中的行；"
-        "给 json_path → 按路径取字段（tasks.1.status，支持 * 与 |）。\n"
-        "② 目录：不给 grep → 列出条目；给后缀（.md）→ 只列这类文件；"
-        "给关键词或正则 → 在文件内容里搜（recursive 时跨子目录）。\n"
-        "③ grep 三种写法自动识别：.md 这类是后缀，/正则/ 或含 [ ] ( ) | ^ $ * + ? \\ 是正则，其余是关键词。\n"
-        "④ recursive=true 表示**一直往下翻**，不设层数限制。\n"
-        "⑤ detail.json / summary.json 是会话记录，**不能整份读**（读到的内容会写回它自己，越读越大），"
+        "读文件或列目录——**两个目标两套参数**，看参数名就知道走哪条路。\n"
+        "【读文件】传 file（或 paths 一次读多个）：不给 grep → 全文，可 offset/limit 分段；"
+        "给 grep → 只回命中的行（关键词或 /正则/）；给 json_path → 按路径取字段"
+        "（tasks.1.status，支持 * 与 |）。\n"
+        "【列目录】传 dir：不给 grep → 列出条目；给 .md 这类后缀 → 只列这类文件；"
+        "给关键词或正则 → 在文件内容里搜；recursive=true 表示**一直往下翻**，不设层数限制。\n"
+        "grep 三种写法自动识别：.md 这类是后缀（目录用）、/正则/ 或含 [ ] ( ) | ^ $ * + ? \\ 是正则、其余是关键词。\n"
+        "detail.json / summary.json 是会话记录，**不能整份读**（读到的内容会写回它自己，越读越大），"
         "要用 json_path 指定字段。\n"
-        "要紧看几个文件就用 paths 一次传完（个数不限），不要一个文件一次调用。"
+        "要一次读多个文件就用 paths（个数不限），不要一个文件一次调用。"
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "path": {"type": "string", "description": "文件或目录路径（相对或绝对）"},
+            "file": {"type": "string", "description": "要读的文件路径（与 dir 二选一）"},
+            "dir": {"type": "string", "description": "要列的目录路径（与 file 二选一）"},
             "paths": {"type": "array", "items": {"type": "string"},
-                      "description": "一次读多个路径（与 path 二选一），每段结果前带 ===== 路径 ====="},
+                      "description": "一次读多个文件（与 file 二选一），每段结果前带 ===== 路径 ====="},
             "grep": {"type": "string",
-                     "description": "筛选条件：关键词 / 后缀(.md) / 正则(/xxx/) 自动识别；不给就是全部"},
-            "offset": {"type": "integer", "description": "起始行号（1 起；不传就从第 1 行开始）"},
-            "limit": {"type": "integer", "description": "最多返回行数（不传就返回全部）"},
-            "recursive": {"type": "boolean", "description": "目录是否递归到底（true = 不限层数）"},
+                     "description": "读文件时是内容关键词/正则；列目录时是后缀(.md)或关键词/正则；不给就是全部"},
+            "offset": {"type": "integer", "description": "起始行号（1 起；仅读文件；不传从第 1 行开始）"},
+            "limit": {"type": "integer", "description": "最多返回行数（仅读文件；不传就返回全部）"},
+            "recursive": {"type": "boolean", "description": "列目录时是否递归到底（true = 不限层数）"},
             "json_path": {"type": "string",
-                          "description": "从 JSON 按键/下标取值，如 tasks.1.steps[0].goal，支持 * 与 |"},
+                          "description": "从 JSON 按键/下标取值（仅读文件），如 tasks.1.steps[0].goal，支持 * 与 |"},
+            "path": {"type": "string",
+                     "description": "兼容写法：自动判断是文件还是目录，等价于 file 或 dir"},
         },
         "required": [],
     },
@@ -106,87 +109,104 @@ def classify_grep(value: str) -> tuple[str, str]:
 
 
 def read(
-    path: str = "",
+    file: str = "",
+    dir: str = "",
     paths: Optional[List[str]] = None,
     grep: str = "",
     offset: Optional[int] = None,
     limit: Optional[int] = None,
     recursive: bool = False,
     json_path: str = "",
+    path: str = "",
     base_dir=None,
     **_legacy: Any,
 ) -> str:
-    """读文件内容、列出目录、按条件筛选，或从 JSON 取字段。
+    """读文件或列目录——**两个目标两套参数**，看参数名就知道走哪条路。
 
-    两种目标，一套参数：
+    **读文件**（``file``，或 ``paths`` 一次读多个）：
+    - 不给 ``grep`` → 全文，可用 ``offset`` / ``limit`` 分段
+    - 给关键词或正则 → 只回命中的行
+    - 给 ``json_path`` → 按路径取字段（``tasks.1.status``，支持 ``*`` 与 ``|``）
 
-    - **文件**：``grep`` 给关键词/正则 → 只回命中的行；不给 → 全文（可 ``offset``/``limit`` 分段）。
-      ``json_path`` 给了就按路径取值（``tasks.1.status``，支持 ``*`` 与 ``|``）。
-    - **目录**：``grep`` 给后缀（``.md``）→ 只列这类文件；给关键词/正则 → 在文件内容里搜。
-      ``recursive`` 打开时**一直往下翻**（不限层数），否则只看当前层。
+    **列目录**（``dir``）：
+    - 不给 ``grep`` → 列出条目
+    - 给后缀（``.md``）→ 只列这类文件
+    - 给关键词或正则 → 在文件内容里搜
+    - ``recursive=true`` → **一直往下翻**，不设层数限制
 
-    多个目标用 ``paths`` 一次传完（个数不限）；相对路径以 base_dir（项目目录）为基准。
+    ``path`` 是兼容写法：它自己会判是文件还是目录，等价于 ``file`` 或 ``dir``。
     """
-    # 旧参数兼容：这些键已从 schema 里去掉，但模型偶尔还会按老习惯传；
-    # 直接参数不匹配会抛 TypeError 把整步打挂，所以在这里吸收并按新语义映射。
+    # 旧参数兼容：这些键已从 schema 去掉，但模型偶尔还按老习惯传；
+    # 不匹配会抛 TypeError 把整步打挂，所以吸收并按新语义映射。
     if _legacy:
-        pattern = str(_legacy.get("pattern") or "").strip()
-        if pattern and not str(grep or "").strip():
-            grep = pattern
-        depth = _legacy.get("depth")
-        if depth is not None and not recursive:
+        legacy_pattern = str(_legacy.get("pattern") or "").strip()
+        if legacy_pattern and not str(grep or "").strip():
+            grep = legacy_pattern
+        legacy_depth = _legacy.get("depth")
+        if legacy_depth is not None and not recursive:
             try:
-                recursive = int(depth) > 1
+                recursive = int(legacy_depth) > 1
             except (TypeError, ValueError):
                 pass
         if _legacy.get("regex") and str(grep or "").strip():
             grep = f"/{str(grep).strip().strip('/')}/"
+
+    # ---- 读文件（多个）----
     batch = as_text_list(paths, "paths", MAX_BATCH)
     if batch:
-        return read_batch(
-            batch, offset=offset, limit=limit, json_path=json_path,
-            grep=grep, base_dir=base_dir,
-        )
-    if not str(path or "").strip():
-        raise RuntimeError("read 需要 path（单个）或 paths（多个）之一")
+        return read_batch(batch, offset=offset, limit=limit, json_path=json_path,
+                          grep=grep, base_dir=base_dir)
 
-    target = resolve(path, base_dir)
-    kind, keyword = classify_grep(grep)
-    depth = _RECURSIVE_DEPTH if recursive else 1
+    target_text = str(file or dir or path or "").strip()
+    if not target_text:
+        raise RuntimeError("read 需要 file（读文件）、dir（列目录）或 paths（多个文件）之一")
+    target = resolve(target_text, base_dir)
 
-    if target.is_dir():
+    # 明确给了 dir 就是目录模式；给了 file 就是文件模式；只给 path 时自己判
+    if dir:
+        mode = "dir"
+    elif file:
+        mode = "file"
+    else:
+        mode = "dir" if target.is_dir() else "file"
+
+    kind, cleaned = classify_grep(grep)
+
+    # ---- 列目录 ----
+    if mode == "dir":
+        if not target.is_dir():
+            raise RuntimeError(f"目录不存在：{dir or path}")
+        depth = _RECURSIVE_DEPTH if recursive else 1
         if kind == "suffix":
-            # 后缀筛选：列文件（递归与否由 recursive 决定）
-            return list_entries(target, f"*{keyword}", depth)
+            return list_entries(target, f"*{cleaned}", depth)
         if kind in ("keyword", "regex"):
-            # 内容检索：跨文件搜，命中行带文件名
-            return grep_lines(
-                target, keyword, kind == "regex", 0, depth, "*",
-                max(1, min(as_int(limit, "limit", MAX_GREP_HITS), MAX_GREP_HITS)),
-                str(path),
-            )
+            return grep_lines(target, cleaned, kind == "regex", 0, depth, "*",
+                              max(1, min(as_int(limit, "limit", MAX_GREP_HITS), MAX_GREP_HITS)),
+                              dir or path)
         return list_entries(target, "*", depth)
 
+    # ---- 读文件 ----
     if not target.is_file():
-        raise RuntimeError(f"路径不存在：{path}")
+        raise RuntimeError(f"文件不存在：{file or path}")
     if is_image(target):
         return image_info(target)
     trace = str(json_path or "").strip()
     if trace:
         return read_json_path(target, trace)
     if kind in ("keyword", "regex"):
-        return grep_lines(target, keyword, kind == "regex", 0, 1, "*",
+        return grep_lines(target, cleaned, kind == "regex", 0, 1, "*",
                           max(1, min(as_int(limit, "limit", MAX_GREP_HITS), MAX_GREP_HITS)),
-                          str(path))
+                          file or path)
     # 会话记录禁止整份读：读到的内容会被写回它自己，越读越大
     if target.name.lower() in PROTECTED_JSON:
         raise RuntimeError(
             f"{target.name} 是全量会话记录，**不能整份读**——读到的内容会被写回它自己，"
             "文件越读越大、永远读不完。请用 json_path 只取需要的字段，例如：\n"
-            "  read(path=\"...detail.json\", json_path=\"tasks.1.steps[0].attempts[-1].result.content\")\n"
-            "  read(path=\"...detail.json\", json_path=\"tasks.*.status\")"
+            "  read(file=\"...detail.json\", json_path=\"tasks.1.steps[0].attempts[-1].result.content\")\n"
+            "  read(file=\"...detail.json\", json_path=\"tasks.*.status\")"
         )
     return format_lines(str(target), content_lines(target), offset, limit)
+
 
 def read_batch(
     items: List[str],
@@ -201,7 +221,7 @@ def read_batch(
     blocks: List[str] = []
     for item in items:
         try:
-            body = read(item, offset=offset, limit=limit, json_path=json_path,
+            body = read(file=item, offset=offset, limit=limit, json_path=json_path,
                         grep=grep, base_dir=base_dir)
         except RuntimeError as error:
             body = f"错误：{error}"
