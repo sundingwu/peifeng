@@ -42,8 +42,9 @@ information = {
                      "description": "要看的路径：一个字符串，或一组路径的数组（文件与目录可混放）。"
                                     "文件→读内容；目录→列条目或搜内容。传数组时结果按 ===== 路径 ===== 分段"},
             "grep": {"type": "string",
-                     "description": "筛选。关键词按**字面量**搜（`C++`、`file(name)`、`a|b` 这些照原样匹配）；"
-                                    "要用正则就写成 `/…/`；目标为目录时 `.md`/`*.txt` 这类当后缀，只列这类文件"},
+                     "description": "筛选。默认按**字面量**搜（`C++`、`file(name)`、`a|b`、`/usr/bin/` 都照原样匹配）；"
+                                    "要用正则写成 `re:…`（如 `re:^def `），也认 `/…/` 但内部含斜杠时按字面量处理；"
+                                    "目标是目录时 `.md`/`*.txt` 这类当后缀，只列这类文件"},
             "offset": {"type": "integer",
                        "description": "起始行号（仅文件；不传从第 1 行开始）"},
             "limit": {"type": "integer",
@@ -62,15 +63,24 @@ def classify_grep(value: str, *, is_dir: bool = False) -> tuple[str, str]:
     **不靠"含哪些元字符"猜正则**——``C++``、``file(name)``、``a|b``、``[注意]`` 这些
     用户想搜的都是字面量，猜成正则要么报错（``C++`` 是非法正则），要么搜出别的东西。
 
-    规则：
-    - ``/…/`` 包起来的才是正则（唯一明确的写法）
+    规则（按顺序）：
+    - ``re:…`` → 正则。**明确写法，推荐**，``re:/usr/bin/`` 这种搜路径没问题
+    - ``/…/`` → 正则，但**内部含 ``/`` 时不当正则**——``/usr/bin/`` 是路径不是正则，
+      这种歧义下让位给字面量（真要用正则加 ``re:`` 前缀）
     - **探查目录时** ``.md``、``*.txt`` 这类当后缀（只列这类文件）
     - 其余一律当字面量（匹配时 ``re.escape``，含元字符也照原样找）
     """
-    text = (value or "").strip()
+    raw = value or ""
+    text = raw.strip()
     if not text:
         return "none", ""
-    if len(text) > 2 and text.startswith("/") and text.endswith("/"):
+    if text[:3].lower() == "re:":
+        # 从**原文**截取，只去掉前导空白：正则里的尾随空格是有意义的
+        # （`re:^def ` 要匹配 "def " 后面那个空格，被 strip 掉就变成匹配 "def"）
+        lead = len(raw) - len(raw.lstrip())
+        return "regex", raw[lead + 3:].lstrip()
+    if (len(text) > 2 and text.startswith("/") and text.endswith("/")
+            and "/" not in text[1:-1]):
         return "regex", text[1:-1]
     if is_dir:
         plain = text.lstrip("*")
