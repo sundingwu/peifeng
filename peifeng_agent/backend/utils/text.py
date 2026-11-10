@@ -9,26 +9,22 @@ from pathlib import Path
 #: 需要专用库解析的文档后缀
 DOC_SUFFIXES = (".docx", ".xlsx", ".pptx", ".pdf")
 
-#: 可以按纯文本直接读的后缀（检索时据此决定要不要读内容）
-TEXT_SUFFIXES = (
-    ".md",
-    ".txt",
-    ".csv",
-    ".tsv",
-    ".json",
-    ".jsonl",
-    ".py",
-    ".js",
-    ".ts",
-    ".sql",
-    ".html",
-    ".htm",
-    ".xml",
-    ".yaml",
-    ".yml",
-    ".toml",
-    ".ini",
-    ".log",
+#: 读不了的后缀：二进制、压缩包、可执行文件、图片（图片另有 image_info 给元信息）。
+#: 用黑名单而不是白名单——白名单永远会漏（实测搜 "C++" 时 .cpp 被整类跳过），
+#: 无后缀文件（Makefile、Dockerfile、LICENSE）也该能读。
+BINARY_SUFFIXES = (
+    # 图片
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".ico", ".heic",
+    # 压缩包
+    ".zip", ".gz", ".tar", ".tgz", ".bz2", ".xz", ".7z", ".rar", ".jar", ".whl",
+    # 可执行与库
+    ".exe", ".dll", ".so", ".dylib", ".bin", ".class", ".o", ".a", ".lib", ".obj",
+    # 字节码与数据库
+    ".pyc", ".pyo", ".pyd", ".db", ".sqlite", ".sqlite3", ".mdb",
+    # 多媒体与字体
+    ".mp3", ".mp4", ".avi", ".mov", ".wav", ".flac", ".mkv", ".woff", ".woff2", ".ttf", ".otf",
+    # 其他二进制
+    ".pt", ".pth", ".onnx", ".pkl", ".npy", ".npz", ".parquet", ".feather", ".idx", ".pack",
 )
 
 
@@ -56,8 +52,13 @@ def decode_text(raw: bytes) -> tuple[str, str]:
 
 
 def is_readable(path: Path) -> bool:
-    """这个文件能否按文本（含文档解析）读取。"""
-    return path.suffix.lower() in DOC_SUFFIXES or path.suffix.lower() in TEXT_SUFFIXES
+    """这个文件能否按文本（含文档解析）读取。
+
+    docx/xlsx/pptx/pdf 走文档解析，其余只要不是已知二进制就能按文本读——
+    源码、配置、脚本、无后缀文件（Makefile、LICENSE）都在内。
+    """
+    suffix = path.suffix.lower()
+    return suffix in DOC_SUFFIXES or suffix not in BINARY_SUFFIXES
 
 
 def is_image(path: Path) -> bool:

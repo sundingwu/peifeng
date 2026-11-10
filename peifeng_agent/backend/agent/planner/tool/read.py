@@ -62,24 +62,26 @@ information = {
 }
 
 
-def classify_grep(value: str) -> tuple[str, str]:
-    """把 ``grep`` 认成三种之一：``suffix``（后缀）/ ``regex``（正则）/ ``keyword``（关键词）。
+def classify_grep(value: str, *, is_dir: bool = False) -> tuple[str, str]:
+    """把 ``grep`` 认成 ``suffix`` / ``regex`` / ``keyword`` 之一。
 
-    用户一次只想表达"筛什么"，不该为"这是不是正则"再学一个参数：
-    - ``.md``、``*.txt`` 这种 → 按文件名后缀筛
-    - 用 ``/`` 包起来，或含正则元字符 → 按正则匹配内容
-    - 其余 → 当普通关键词
+    **不靠"含哪些元字符"猜正则**——``C++``、``file(name)``、``a|b``、``[注意]`` 这些
+    用户想搜的都是字面量，猜成正则要么报错（``C++`` 是非法正则），要么搜出别的东西。
+
+    规则：
+    - ``/…/`` 包起来的才是正则（唯一明确的写法）
+    - **探查目录时** ``.md``、``*.txt`` 这类当后缀（只列这类文件）
+    - 其余一律当字面量（匹配时 ``re.escape``，含元字符也照原样找）
     """
     text = (value or "").strip()
     if not text:
         return "none", ""
-    plain = text.lstrip("*")
-    if re.fullmatch(r"\.[A-Za-z0-9]{1,8}", plain):
-        return "suffix", plain.lower()
     if len(text) > 2 and text.startswith("/") and text.endswith("/"):
         return "regex", text[1:-1]
-    if any(ch in text for ch in ("\\", "[", "]", "(", ")", "|", "^", "$", "+", "?")):
-        return "regex", text
+    if is_dir:
+        plain = text.lstrip("*")
+        if re.fullmatch(r"\.[A-Za-z0-9]{1,8}", plain):
+            return "suffix", plain.lower()
     return "keyword", text
 
 
@@ -113,7 +115,7 @@ def read(
     if not target_text:
         raise RuntimeError("read 需要 file（读文件）、dir（列目录）或 paths（多个文件）之一")
     target = resolve(target_text, base_dir)
-    kind, cleaned = classify_grep(grep)
+    kind, cleaned = classify_grep(grep, is_dir=bool(dir))
 
     # ---- 列目录 ----
     if dir:
@@ -221,7 +223,10 @@ def compile(keyword: str, regex: bool):
         try:
             return re.compile(keyword, re.IGNORECASE)
         except re.error as error:
-            raise RuntimeError(f"正则表达式无效：{keyword}（{error}）") from None
+            raise RuntimeError(
+                f"正则无法编译：{keyword}（{error}）。"
+                "改成合法正则（如 C\\+\\+），或去掉两头的 / 按关键词字面量搜"
+            ) from None
     return re.compile(re.escape(keyword), re.IGNORECASE)
 
 
