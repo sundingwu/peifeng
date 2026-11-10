@@ -2,7 +2,7 @@
 
 目标类型由路径自己决定，不用另选参数：
 
-- ``path`` 是文件（或 ``paths`` 批量）：内容按行输出（带行号，可 offset/limit 分段）；
+- ``path`` 指向文件（可传一组路径批量）：内容按行输出（带行号，可 offset/limit 分段）；
   ``.docx``/``.xlsx``/``.pptx`` 由文档库解析为文本；给 ``grep`` 就只回命中的行
 - ``path`` 是目录：列出条目（名称、类型、大小、修改时间）；给后缀（``.md``）只列这类文件，
   给关键词/正则就在其中搜内容，``recursive=True`` 一直往下翻
@@ -38,10 +38,9 @@ information = {
     "parameters": {
         "type": "object",
         "properties": {
-            "path": {"type": "string",
-                     "description": "要看的路径：文件→读内容；目录→列条目或搜内容"},
-            "paths": {"type": "array", "items": {"type": "string"},
-                      "description": "一次看多个（文件或目录可以混放），结果按 ===== 路径 ===== 分段"},
+            "path": {"type": ["string", "array"], "items": {"type": "string"},
+                     "description": "要看的路径：一个字符串，或一组路径的数组（文件与目录可混放）。"
+                                    "文件→读内容；目录→列条目或搜内容。传数组时结果按 ===== 路径 ===== 分段"},
             "grep": {"type": "string",
                      "description": "筛选。关键词按**字面量**搜（`C++`、`file(name)`、`a|b` 这些照原样匹配）；"
                                     "要用正则就写成 `/…/`；目标为目录时 `.md`/`*.txt` 这类当后缀，只列这类文件"},
@@ -81,8 +80,7 @@ def classify_grep(value: str, *, is_dir: bool = False) -> tuple[str, str]:
 
 
 def read(
-    path: str = "",
-    paths: Optional[List[str]] = None,
+    path: Any = None,
     grep: str = "",
     offset: Optional[int] = None,
     limit: Optional[int] = None,
@@ -91,20 +89,18 @@ def read(
 ) -> str:
     """看一个或多个目标：**文件读内容，目录列条目或搜内容**。
 
-    目标类型由路径自己决定，不用另选参数——``path="a.md"`` 是文件，``path="src"`` 是目录。
-    ``paths`` 可以混放文件和目录（批量探查多个不相关的目录时用）。
+    ``path`` 接一个路径或一组路径（``"a.md"`` 或 ``["src", "说明.md"]``）——
+    目标类型也由路径自己决定，不用另选参数。
     """
-    batch = as_text_list(paths, "paths", 0)
-    if batch:
-        return read_batch(
-            batch, offset=offset, limit=limit, grep=grep, recursive=recursive, base_dir=base_dir
+    targets = as_text_list(path, "path", 0)
+    if not targets:
+        raise RuntimeError("read 需要 path：一个路径，或一组路径的数组")
+    if len(targets) == 1:
+        return read_one(
+            targets[0], grep=grep, offset=offset, limit=limit, recursive=recursive, base_dir=base_dir
         )
-
-    target_text = str(path or "").strip()
-    if not target_text:
-        raise RuntimeError("read 需要 path（文件或目录）或 paths（多个）之一")
-    return read_one(
-        target_text, grep=grep, offset=offset, limit=limit, recursive=recursive, base_dir=base_dir
+    return read_batch(
+        targets, offset=offset, limit=limit, grep=grep, recursive=recursive, base_dir=base_dir
     )
 
 
