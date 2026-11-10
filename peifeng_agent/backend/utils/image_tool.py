@@ -10,7 +10,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from peifeng_agent.backend.utils.concurrency import run_parallel_safe
 from peifeng_agent.backend.utils.text import IMAGE_SUFFIXES, as_text_list, image_info
+
+#: 看图并发度：与 VISION_CALL_LIMIT 对齐，再多也没有收益（每张都要过一次模型）
+IMAGE_WORKERS = 5
 
 information = {
     "name": "image_describe",
@@ -64,14 +68,19 @@ def image_describe(
 
 
 def describe_many(paths: list[str], question: str, max_side: int, vision, base_dir) -> str:
-    """逐张描述；单张失败只记在它自己那一段。"""
+    """并发描述多张；单张失败只记在它自己那一段，结果按输入顺序拼。
+
+    每张图都要过一次模型（几秒），串行看 5 张就是 5 倍等待——这里是并发的收益最大处。
+    """
+    results = run_parallel_safe(
+        lambda item: describe_one(item, question, max_side, vision, base_dir),
+        paths,
+        workers=IMAGE_WORKERS,
+        thread_prefix="vision",
+    )
     blocks: list[str] = []
-    for item in paths:
-        try:
-            body = describe_one(item, question, max_side, vision, base_dir)
-        except Exception as error:  # noqa: BLE001 - 单张失败不该拖垮整批
-            body = f"识别失败：{error}"
-        blocks.append(f"===== {item} =====\n{body}")
+    for item, (body, error) in zip(paths, results):
+        blocks.append(f"===== {item} =====\n{body if error is None else f'识别失败：{error}'}")
     return "\n\n".join(blocks)
 
 

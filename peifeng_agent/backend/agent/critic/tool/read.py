@@ -26,7 +26,11 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any, List, Optional
 
+from peifeng_agent.backend.utils.concurrency import run_parallel_safe
 from peifeng_agent.backend.utils.text import as_text_list, content_lines, image_info, is_image, is_readable
+
+#: 批量读的并发度：本地读盘，8 路足够快也不会把磁盘打满
+READ_WORKERS = 8
 
 information = {
     "name": "read",
@@ -139,14 +143,16 @@ def read_batch(
     grep: str = "",
     base_dir=None,
 ) -> str:
-    """一次读多个文件：每段前带 ``===== 路径 =====``（条数与总字数都不设限）。"""
+    """一次读多个文件：并发读，每段前带 ``===== 路径 =====``（条数与总字数都不设限）。"""
+    results = run_parallel_safe(
+        lambda item: read(file=item, offset=offset, limit=limit, grep=grep, base_dir=base_dir),
+        items,
+        workers=READ_WORKERS,
+        thread_prefix="read",
+    )
     blocks: List[str] = []
-    for item in items:
-        try:
-            body = read(file=item, offset=offset, limit=limit, grep=grep, base_dir=base_dir)
-        except RuntimeError as error:
-            body = f"错误：{error}"
-        blocks.append(f"===== {item} =====\n{body}")
+    for item, (body, error) in zip(items, results):
+        blocks.append(f"===== {item} =====\n{body if error is None else f'错误：{error}'}")
     return "\n\n".join(blocks)
 
 def grep_lines(target: Path, keyword: str, regex: bool, recursive: bool, shown: str) -> str:

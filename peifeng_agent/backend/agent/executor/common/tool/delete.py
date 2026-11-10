@@ -4,9 +4,14 @@ import shutil
 from pathlib import Path
 from typing import List, Tuple
 
+from peifeng_agent.backend.utils.concurrency import run_parallel_safe
+
 #: 条数不限（逐项回报成功/跳过/失败，结果本身很短）
 #: 通配符：本工具只处理具体路径
 WILDCARDS = ("*", "?")
+
+#: 文件操作并发度：不同路径互不影响，4 路足够
+FILE_WORKERS = 4
 
 information = {
     "name": "delete",
@@ -35,16 +40,23 @@ information = {
 
 
 def delete(items: List[dict], recursive: bool = False, dry_run: bool = False, base_dir=None) -> str:
-    """按 items 批量删除，返回逐项结果；相对路径以 base_dir 为基准。"""
+    """按 items 并发删除（各项互相独立），返回逐项结果；相对路径以 base_dir 为基准。"""
     planned = parse_items(items)
 
+    results = run_parallel_safe(
+        lambda path: remove(path, bool(recursive), bool(dry_run), base_dir),
+        planned,
+        workers=FILE_WORKERS,
+        thread_prefix="delete",
+    )
     lines: List[str] = []
     counts = {"ok": 0, "skip": 0, "fail": 0}
-    for path in planned:
-        try:
-            mark, text = remove(path, bool(recursive), bool(dry_run), base_dir)
-        except OSError as error:
-            mark, text = "✗", f"{path}：{error}"
+    for path, (result, error) in zip(planned, results):
+        if error is None:
+            mark, text = result
+        else:
+            err = error
+            mark, text = "✗", f"{path}：{err}"
         counts[{"✓": "ok", "-": "skip", "✗": "fail"}[mark]] += 1
         lines.append(f"{mark} {text}")
 

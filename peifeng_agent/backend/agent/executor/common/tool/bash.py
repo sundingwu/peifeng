@@ -4,6 +4,7 @@ import os
 import subprocess
 from typing import List, Optional
 
+from peifeng_agent.backend.utils.concurrency import run_parallel_safe
 from peifeng_agent.backend.utils.text import as_text_list, decode_text
 
 #: 未指定 timeout（或给了 0 / 负数 / 非法值）时使用的默认超时（秒）
@@ -13,6 +14,9 @@ MAX_TIMEOUT = 3600
 #: 一次最多跑几条命令
 MAX_BATCH = 0  #: 0 = 不限条数（输出量另有上限保护）
 
+
+#: 批量命令的并发度：装包、跑脚本这类各占一个进程，4 路并行够快也不会打满机器
+BASH_WORKERS = 4
 
 information = {
     "name": "bash",
@@ -56,19 +60,21 @@ def bash(
 
 
 def run_many(commands: List[str], timeout: Optional[int], base_dir) -> str:
-    """按顺序跑多条命令：每条结果独立成段，单条失败或超时不影响后面的。
+    """并发跑多条**互不依赖**的命令：每条结果独立成段，单条失败或超时不影响其余项。
 
     **输出不截断**：截断会让模型以为"文件里没有这段"，然后反复缩小切片范围重试直到轮次耗尽
     （实测有任务在一个 HTML 上空转 40 多轮）。上下文压力交给 agent 层的自动压缩处理。
     """
+    results = run_parallel_safe(
+        lambda cmd: run_one(cmd, timeout, base_dir),
+        commands,
+        workers=BASH_WORKERS,
+        thread_prefix="bash",
+    )
     blocks: List[str] = []
-    for index, cmd in enumerate(commands, start=1):
+    for index, (cmd, (body, error)) in enumerate(zip(commands, results), start=1):
         head = f"### [{index}/{len(commands)}] {cmd}"
-        try:
-            body = run_one(cmd, timeout, base_dir)
-        except RuntimeError as error:
-            body = f"错误：{error}"
-        blocks.append(f"{head}\n{body}")
+        blocks.append(f"{head}\n{body if error is None else f'错误：{error}'}")
     return "\n\n".join(blocks)
 
 

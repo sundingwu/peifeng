@@ -236,13 +236,16 @@ def as_dict_list(value, label: str = "参数", limit: int = 0) -> list[dict]:
 
 
 def call_many(func, items: list[dict], label: str, base_dir=None, preview: str = "", **extra) -> str:
-    """逐个调用同一个工具并分段汇总：一次调用完成多个目标。
+    """并发调用同一个工具并分段汇总：一次调用完成多个目标。
 
     ``items`` 里每一项的键与单次调用的参数同名（多余的键忽略——模型偶尔会多写）。
     ``extra`` 是宿主注入的上下文（如 ``session_dir``），只在工具签名接受时才传。
-    单个目标失败只记在它自己那一段，不影响其余项。
+    单个目标失败只记在它自己那一段，不影响其余项；结果仍按输入顺序排。
+    并发是因为这些目标本来就互相独立——串行只是白等（写 5 个文件、删 10 个路径）。
     """
     import inspect
+
+    from peifeng_agent.backend.utils.concurrency import run_parallel
 
     parameters = inspect.signature(func).parameters
     accepted = {
@@ -252,13 +255,17 @@ def call_many(func, items: list[dict], label: str, base_dir=None, preview: str =
         and name not in {"base_dir", *extra}
     }
     passed = {key: value for key, value in extra.items() if key in parameters}
-    blocks: list[str] = []
-    for index, item in enumerate(items, start=1):
+
+    def one(entry: tuple[int, dict]) -> str:
+        index, item = entry
         cleaned = {key: value for key, value in item.items() if key in accepted}
         title = str(cleaned.get(preview) or f"第 {index} 项") if preview else f"第 {index} 项"
         try:
             body = func(**cleaned, base_dir=base_dir, **passed)
         except Exception as error:  # noqa: BLE001 - 单个失败不该拖垮整批
             body = f"失败：{error}"
-        blocks.append(f"=== [{index}/{len(items)}] {title} ===\n{body}")
-    return "\n\n".join(blocks)
+        return f"=== [{index}/{len(items)}] {title} ===\n{body}"
+
+    return "\n\n".join(
+        run_parallel(one, list(enumerate(items, start=1)), thread_prefix=label or "batch")
+    )

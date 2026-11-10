@@ -11,8 +11,11 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+import threading
 from pathlib import Path
 from typing import List, Tuple
+
+from peifeng_agent.backend.utils.concurrency import run_parallel_safe
 
 #: 支持的动作与冲突策略
 ACTIONS = ("copy", "move", "rename")
@@ -23,6 +26,9 @@ CONFLICTS = ("rename", "skip", "overwrite")
 WILDCARDS = ("*", "?")
 #: 动作动词（用在结果标题里）
 VERBS = {"copy": "复制", "move": "移动", "rename": "重命名"}
+
+#: 文件操作并发度：不同源/目标互不影响，4 路足够
+FILE_WORKERS = 4
 
 information = {
     "name": "move",
@@ -76,13 +82,20 @@ def move(
 
     planned = parse_items(items, name)
 
+    results = run_parallel_safe(
+        lambda pair: apply(name, pair[0], pair[1], bool(dry_run), conflict, base_dir),
+        planned,
+        workers=FILE_WORKERS,
+        thread_prefix="move",
+    )
     lines: List[str] = []
     counts = {"ok": 0, "skip": 0, "fail": 0}
-    for path, target in planned:
-        try:
-            mark, text = apply(name, path, target, bool(dry_run), conflict, base_dir)
-        except OSError as error:
-            mark, text = "✗", f"{path} → {target}：{error}"
+    for (path, target), (result, error) in zip(planned, results):
+        if error is None:
+            mark, text = result
+        else:
+            err = error
+            mark, text = "✗", f"{path} → {target}：{err}"
         counts[{"✓": "ok", "-": "skip", "✗": "fail"}[mark]] += 1
         lines.append(f"{mark} {text}")
 
@@ -135,38 +148,59 @@ def apply(action: str, path: str, target: str, dry_run: bool, on_conflict: str, 
 
     if destination == source:
         return "-", f"{source} 源与目标相同，跳过"
+    if on_conflict == "rename":
+        # rename 策略全程串行：挑空闲名与写入之间只要有一丝空隙，两个线程就会挑到同一个名字，
+        # 后写的把前写的覆盖掉（实测 8 个同名副本只落地 3~5 个）。
+        # 锁的代价远小于一次模型往返，正确性优先。
+        with _NAME_LOCK:
+            if destination.exists():
+                destination = next_free(destination)
+            return transfer(action, source, destination, dry_run)
+
     if destination.exists():
         if on_conflict == "skip":
             return "-", f"{source} → {destination} 已存在，跳过"
-        if on_conflict == "rename":
-            destination = next_free(destination)
-        elif destination.is_dir():
+        if destination.is_dir():
             return "✗", f"{destination} 是已存在的目录：不覆盖目录，请换目标或先清空"
 
+    return transfer(action, source, destination, dry_run, overwrite=on_conflict == "overwrite")
 
-    if not dry_run:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        if on_conflict == "overwrite" and destination.exists():
-            if source.is_dir():
-                return "✗", f"不能用目录覆盖文件：{source} → {destination}"
-            handle, temporary = tempfile.mkstemp(dir=destination.parent, prefix=".replace-")
-            os.close(handle)
-            try:
-                shutil.copy2(source, temporary)
-                os.replace(temporary, destination)
-                if action in ("move", "rename"):
-                    source.unlink()
-            finally:
-                Path(temporary).unlink(missing_ok=True)
-        elif action in ("move", "rename"):
-            shutil.move(str(source), str(destination))
-        elif source.is_dir():
-            shutil.copytree(source, destination)
-        else:
-            shutil.copy2(source, destination)
+
+def transfer(
+    action: str,
+    source: Path,
+    destination: Path,
+    dry_run: bool,
+    *,
+    overwrite: bool = False,
+) -> Tuple[str, str]:
+    """按 action 把 source 搬到 destination，返回 (状态标记, 说明)。"""
     if dry_run:
         return "✓", f"{source} → {destination}（将{VERBS[action]}）"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if overwrite and destination.exists():
+        if source.is_dir():
+            return "✗", f"不能用目录覆盖文件：{source} → {destination}"
+        handle, temporary = tempfile.mkstemp(dir=destination.parent, prefix=".replace-")
+        os.close(handle)
+        try:
+            shutil.copy2(source, temporary)
+            os.replace(temporary, destination)
+            if action in ("move", "rename"):
+                source.unlink()
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+    elif action in ("move", "rename"):
+        shutil.move(str(source), str(destination))
+    elif source.is_dir():
+        shutil.copytree(source, destination)
+    else:
+        shutil.copy2(source, destination)
     return "✓", f"{source} → {destination}"
+
+
+#: 并发下"挑空闲名 + 实际搬动"必须整体串行；用 RLock 因为 apply 会套住 next_free
+_NAME_LOCK = threading.RLock()
 
 
 def next_free(target: Path) -> Path:
@@ -174,18 +208,21 @@ def next_free(target: Path) -> Path:
 
     移动的目标重名只能另存（不能覆盖用户的既有文件）；这与 ``write`` 的"整体写入直接覆盖"
     是两回事——后者覆盖前会把旧版备份到会话目录。
+
+    整个查找加锁：批量移动是并发的，两个线程同时挑"下一个空闲名"会挑到同一个。
     """
-    if not target.exists():
-        return target
-    if target.is_dir():
+    with _NAME_LOCK:
+        if not target.exists():
+            return target
+        if target.is_dir():
+            for index in range(1, 1000):
+                candidate = target.with_name(f"{target.name}-{index}")
+                if not candidate.exists():
+                    return candidate
+            raise RuntimeError(f"同名目录过多，请换一个目标名：{target.name}")
+        stem, suffix = target.stem, target.suffix
         for index in range(1, 1000):
-            candidate = target.with_name(f"{target.name}-{index}")
+            candidate = target.with_name(f"{stem}-{index}{suffix}")
             if not candidate.exists():
                 return candidate
-        raise RuntimeError(f"同名目录过多，请换一个目标名：{target.name}")
-    stem, suffix = target.stem, target.suffix
-    for index in range(1, 1000):
-        candidate = target.with_name(f"{stem}-{index}{suffix}")
-        if not candidate.exists():
-            return candidate
-    raise RuntimeError(f"同名文件过多，请换一个目标名：{target.name}")
+        raise RuntimeError(f"同名文件过多，请换一个目标名：{target.name}")
