@@ -1,7 +1,7 @@
 """流程编排与转发：在 Planner / Executor / Critic 之间转发请求与结果，直到任务收尾。
 
 - 流程：plan -> execute -> review -> rework（TaskOrchestrator）；失败就地停止并出总结汇报
-- 状态：TaskState（任务级，落 detail.json）/ SessionState（会话级，落 summary.json）
+- 状态：TaskState（任务级，落 detail/）/ SessionState（会话级，落 summary.json）
 - 提示：build_* 是纯函数，把状态翻译成给模型的请求与提示
 - 调度：节点在 daemon 线程内执行，主线程转发事件并轮询页面插入的补充输入
 """
@@ -173,7 +173,7 @@ def render_step_output(task_seq: int, index: int, step: PlanStep, result: Execut
 
 @dataclass
 class TaskState:
-    """一次任务的运行态（按任务号存档在 ``detail.json``）。"""
+    """一次任务的运行态（按任务号存档在 ``detail/``）。"""
 
     task_seq: int = 0
     original_request: str = ""
@@ -256,7 +256,7 @@ class TaskState:
         ``result.summary``，缺失时用正文首段），产出文件另存于 ``step.files``——下一步
         据此 ``read`` 复用，不必重跑这一步。压缩只作用于"注入模型上下文的那一份"：完整
         正文落在 ``step.output_file``（由编排器落盘后传入），每次尝试与工具输出仍在
-        ``detail.json`` 里。
+        ``detail/`` 里。
 
         ``step.deliverable`` 优先取**评审通过时回传的产出内容**（``review.file_content``，
         它已经核对过），评审没给时才用编排层直接从文件读出来的 ``artifact``。
@@ -274,7 +274,7 @@ class TaskState:
         if reviewed_path and reviewed_path not in step.files:
             step.files.append(reviewed_path)
         step.output_file = output_file
-        # 组号写进记录：detail.json 里同组几步各自一条，靠这个字段认出"它们是同时跑的"
+        # 组号写进记录：detail/ 里同组几步各自一条，靠这个字段认出"它们是同时跑的"
         step.group = int(getattr(self.plan.steps[index], "group", 0) or 0) if self.plan and index < len(self.plan.steps) else 0
         step.status = "completed"
 
@@ -339,7 +339,7 @@ def build_plan_request(
 def build_plan_outline(state: TaskState, current: int = -1, upto: int = -1) -> str:
     """计划本身：每步交给谁、做什么、验收口径——**不带执行状态**。
 
-    计划是 planner 给的原始编排（与 ``detail.json`` 里的 ``plan`` 同形）。``current`` 只用来
+    计划是 planner 给的原始编排（与 ``detail/`` 里的 ``plan`` 同形）。``current`` 只用来
     在行尾打个 ``（本步）`` 指针，说明"现在做这一步"；已完成/未做不在这里标注——已完成的
     进度由「已完成步骤」那段摘要表达。
     """
@@ -425,7 +425,7 @@ def build_completed_prompt(state: TaskState) -> str:
     """已完成步骤的**压缩摘要**：只有事实——目标、worker、结果、产出文件、完整产出路径。
 
     每一步在评审通过时就被压成这一条（见 :meth:`TaskState.accept_step`）：完整正文、每次
-    尝试与工具输出留在该步的 ``output_file`` 与 ``detail.json``。**这里不写“该怎么读、不要重跑”这类说明**——那是
+    尝试与工具输出留在该步的 ``output_file`` 与 ``detail/``。**这里不写“该怎么读、不要重跑”这类说明**——那是
     系统提示里「通用规则」的职责（system 说规则、user 说事实）。
     """
     lines: list[str] = []
@@ -480,7 +480,7 @@ def build_task_result(state: TaskState, content: str, status: str) -> TaskResult
 def build_failure_report(state: TaskState, reason: str) -> str:
     """任务没做成时的总结汇报：进度、卡在哪、产出什么、下一步建议。
 
-    写进 ``content``／``detail.json``／``summary.json`` 三处，所以它同时是"给用户看的交代"
+    写进 ``content``／``detail/``／``summary.json`` 三处，所以它同时是"给用户看的交代"
     和"给下一次规划的上下文"——用户重新提要求时，Planner 从会话摘要里就能读到这份报告，
     不用再从零猜"上次到底做到哪、为什么没成"。
     """
@@ -524,7 +524,7 @@ def build_failure_report(state: TaskState, reason: str) -> str:
 def build_tool_summary(result: ExecutionResult) -> str:
     """工具调用一览：一行一次（工具名 + 目标 + 成败），出错时带简短的错误信息。
 
-    不列参数、不列完整输出：那些留在 ``detail.json`` 里，需要细节时自己读。
+    不列参数、不列完整输出：那些留在 ``detail/`` 里，需要细节时自己读。
     """
     if not result.tool_calls:
         return "（未调用工具）"
@@ -540,7 +540,7 @@ def build_tool_summary(result: ExecutionResult) -> str:
 def append_evidence(lines: list[str], result: ExecutionResult, content_label: str) -> None:
     """把执行证据压成**摘要**追加进提示：做法与目的 + 正文首段 + 产出位置 + 限制 + 工具一览。
 
-    完整正文与每一次工具调用的参数/输出都不进上下文——它们在产出文件与 ``detail.json``
+    完整正文与每一次工具调用的参数/输出都不进上下文——它们在产出文件与 ``detail/``
     里，模型需要时自己读。所以无论返修多少轮，提示都不会随执行证据膨胀；而"产出在哪、
     怎么读"始终保留，返修不必重做已经做对的部分。
     """
@@ -555,7 +555,7 @@ def append_evidence(lines: list[str], result: ExecutionResult, content_label: st
     if result.content or result.tool_calls:
         lines.append(
             "（需要完整正文时按上面的产出路径 read（没有落盘产出则以本次摘要为准）；"
-            "工具调用输出与每次尝试只在 detail.json 里，任务结束后可用 read 的 json_path 取。"
+            "工具调用输出与每次尝试在 detail/ 里每步一个文件，任务结束后可直接读那个文件。"
             "修的时候按根因改——不要只调整措辞、绕开评审指出的那一项，或把同一件事重做一遍）"
         )
 
@@ -572,7 +572,7 @@ class SessionState:
 
     @property
     def name(self) -> str:
-        """会话名（用于定位 summary.json 与 detail.json）。"""
+        """会话名（用于定位 summary.json 与 detail/）。"""
         if self.info is None:
             return ""
         return self.info.file_name or self.info.title
@@ -664,7 +664,7 @@ def build_session_summary(state: SessionState, *, with_paths: bool = True) -> st
             if entries:
                 lines.append("  中断步骤完整操作记录：" + json.dumps(entries, ensure_ascii=False))
         lines.append(
-            f'  明细：read(path="<会话目录>/detail", grep="task{summary.task_seq}_step")'
+            f'  明细：read(targets=[{{"path": "<会话目录>/detail", "grep": "task{summary.task_seq}_step"}}])'
             "（每步一个文件，直接全量读即可）"
         )
     return "\n".join(lines)
@@ -1237,7 +1237,7 @@ class TaskOrchestrator:
                 workspace = self.runtime.get("workspace") or ""
                 for member, result in zip(members, results):
                     output_file = self.persist_step_output(member, plan.steps[member], result)
-                    # 组内每步各自一条记录（detail.json 里分开存），共用同一次评审结论；
+                    # 组内每步各自一条记录（detail/ 里分开存），共用同一次评审结论；
                     # 各自存自己的产出正文，下一步按步取用
                     self.task.accept_step(
                         member, result, output_file=output_file, review=review,
@@ -1470,7 +1470,7 @@ class TaskOrchestrator:
         """把一步的完整产出落盘到会话的 ``internal`` 目录，返回路径（落不下去时返回空串）。
 
         **为什么必须落盘**：任务内上下文只带压缩摘要（:data:`STEP_SUMMARY_CHARS`），而
-        ``detail.json`` 只在任务收尾时写入——任务进行中它里面还没有本任务的记录。所以这个
+        ``detail/`` 只在任务收尾时写入——任务进行中它里面还没有本任务的记录。所以这个
         文件是"本步正文传给下一步"的唯一通道：下一步据 ``step.output_file`` 直接 read。
 
         落盘失败只是降级（下一步只能看摘要），不中断任务。
@@ -1512,7 +1512,7 @@ class TaskOrchestrator:
         重复调用只返回已有结果，避免 ``summary.json`` 里出现同一个任务的两条摘要。
 
         ``status="aborted"``（用户中止）时对话里只留一句"任务已停止"；已产出什么、做到哪一步，
-        都在 ``summary.json`` 与 ``detail.json`` 里，用户要看时再看。
+        都在 ``summary.json`` 与 ``detail/`` 里，用户要看时再看。
         """
         if self._finalized:
             return build_task_result(self.task, self.task.content, self.task.status)
@@ -1520,7 +1520,7 @@ class TaskOrchestrator:
             if not self.task.abort_reason:
                 reason = getattr(self, "interruption_reason", None)
                 self.task.abort_reason = (reason() if reason else "") or "用户中止了任务"
-            # 中止时对话里只留一句话：产出了什么、做到哪，都已在 detail.json 与会话记录里
+            # 中止时对话里只留一句话：产出了什么、做到哪，都已在 detail/ 与会话记录里
             content = "任务已停止。"
             self.emit("orchestrator_aborted", reason=self.task.abort_reason)
         pending = self.drain_input()
@@ -1556,7 +1556,7 @@ class TaskOrchestrator:
     def fail_task(self, reason: str) -> TaskResult:
         """任务失败（异常 / 某步做不到）时的收尾：生成一份**总结汇报**并落盘。
 
-        汇报写进 ``content`` → 同时进 ``detail.json`` 与 ``summary.json``：用户看得出"做到哪、
+        汇报写进 ``content`` → 同时进 ``detail/`` 与 ``summary.json``：用户看得出"做到哪、
         产出什么"，下一次规划也能从会话摘要里读到它（上下文可见），不必重头猜。
         """
         # 先记原因：collect_files 靠它把"未通过评审那次"的产出也纳进来（失败时要能直接取用）

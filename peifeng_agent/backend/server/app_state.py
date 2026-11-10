@@ -1056,7 +1056,7 @@ class AppEntry:
         """退出前收尾：请求中止**所有**在跑的任务，并等它们把会话落盘。
 
         任务线程是 daemon，进程退出不会等它；这里给它们一点时间走完 ``finally`` 里的收尾，
-        避免 Ctrl+C 正好落在写 summary.json / detail.json 的中间。
+        避免 Ctrl+C 正好落在写 summary.json / detail/ 的中间。
         """
         self._shutting_down = True
         workers = []
@@ -1093,7 +1093,7 @@ class AppEntry:
         self.store.save(runner.session)
 
     def finish_failure(self, runner: SessionRunner, reason: str, *, status: str = "failed") -> None:
-        """失败 / 中止也留一份**总结汇报**（写 detail.json 与 summary.json），而不是只有一条摘要。
+        """失败 / 中止也留一份**总结汇报**（写 detail/ 与 summary.json），而不是只有一条摘要。
 
         编排层还在时交给它的 ``fail_task``：那里知道每一步做到哪、产出哪些文件、卡在哪，
         生成的汇报下一次规划也能读到；只有编排层不可用时才退化成 :meth:`record_failure`。

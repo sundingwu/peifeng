@@ -115,8 +115,8 @@ export function Sidebar({
     modal.confirm({
       title: `彻底删除会话「${session}」？`,
       content: archived
-        ? "会从磁盘删除这个归档会话的全部记录（summary.json 与 detail.json），无法恢复。"
-        : "会从磁盘删除这个会话的全部记录（summary.json 与 detail.json），无法恢复；只想让它离开列表，请改用「归档对话」。",
+        ? "会从磁盘删除这个归档会话的全部记录（摘要与每步明细），无法恢复。"
+        : "会从磁盘删除这个会话的全部记录（摘要与每步明细），无法恢复；只想让它离开列表，请改用「归档对话」。",
       okText: "彻底删除",
       okButtonProps: { danger: true },
       cancelText: "取消",

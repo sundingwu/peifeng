@@ -33,7 +33,7 @@ class AgentRequest(BaseModel):
 
     - ``environment``：给人看的环境说明（项目目录 / 中间目录 / 会话目录…），进 system 段末尾
     - ``workspace``：当前项目的工作文件夹（工具的相对路径基准）
-    - ``session_dir``：当前会话目录（会话级文件如 detail.json 的定位依据）
+    - ``session_dir``：当前会话目录（会话级文件如 detail/ 的定位依据）
 
     ``stop_check`` 是取消信号：用户点「停止」后它返回 ``True``，节点据此在**当前工具调用
     结束后**收尾（不再发起新的模型或工具调用），把"已经做了什么"交代清楚再结束。
@@ -243,18 +243,18 @@ class TaskStep(BaseModel):
     expected_output: str = ""
     #: 由哪个 worker 做的（明细里保留，便于回溯"谁做了什么"）
     worker: str = ""
-    #: 评审通过后压缩成的步骤摘要（做法与目的）：任务内上下文只带它，细节见产出文件与 detail.json
+    #: 评审通过后压缩成的步骤摘要（做法与目的）：任务内上下文只带它，细节见产出文件与 detail/
     summary: str = ""
     #: 评审给出的**交付物要点**（比 summary 长，含关键数据/口径/结论）：下一步据此直接接着干，
     #: 不必为了拿正文再 read 一次产出文件
     deliverable: str = ""
-    #: 所属并行组号（0 = 独立步骤）。同组的几步在 detail.json 里**各自一条记录**，
+    #: 所属并行组号（0 = 独立步骤）。同组的几步在 detail/ 里**各自一条记录**，
     #: 但共用同一次评审结论——分开存是为了回溯时能看清"这几步是同时跑的、各自做了什么"
     group: int = 0
     #: 本步产出文件（已落盘；压缩摘要的一部分，下一步按需 read 复用）
     files: List[str] = Field(default_factory=list)
     #: 本步**完整产出**的落盘位置（会话 internal 目录下的 .md：摘要 + 交接 + 正文全文）。
-    #: 任务进行中 ``detail.json`` 还没有本任务记录，下一步只能靠这个文件拿到正文。
+    #: 任务进行中 ``detail/`` 还没有本任务记录，下一步只能靠这个文件拿到正文。
     output_file: str = ""
     attempts: List[StepAttempt] = Field(default_factory=list)
     #: 本步骤的节点异常（如有）
@@ -266,7 +266,8 @@ class TaskStep(BaseModel):
 class TaskSummary(BaseModel):
     """写进 ``summary.json`` 的任务摘要（跨任务默认可见）。
 
-    ``task_seq`` 同时是 ``detail.json`` 里该任务的键：要细节就用 ``read`` 的 ``json_path`` 去取。
+    ``task_seq`` 同时是 ``detail/`` 里文件名的前缀：``task{task_seq}_step{NN}.json``
+    就是该任务每一步的明细，可整份读。
     """
 
     task_seq: int
@@ -286,7 +287,7 @@ class TaskSummary(BaseModel):
 
 
 class TaskDetail(BaseModel):
-    """写进 ``detail.json`` 的任务明细（任务内部完整上下文，按任务号存档）。"""
+    """写进 ``detail/`` 的任务明细（任务内部完整上下文，按任务号存档）。"""
 
     interruption_log: List[dict] = Field(default_factory=list)
     task_seq: int

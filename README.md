@@ -13,7 +13,7 @@ Worker   ── 一步步执行：读素材、跑脚本、生成 docx/xlsx/pptx/
    ↓
 Critic   ── 每步之后独立核验（只读，不改），通过才进下一步；不通过就打回重做
    ↓
-交付文件 + 会话记录（summary.json / detail.json）
+交付文件 + 会话记录（summary.json / detail/）
 ```
 
 ## 特点
@@ -89,7 +89,7 @@ PeiFeng/
 **工具批量参数优先**——每个工具都能一次处理多个目标，减少往返：
 
 ```python
-read(paths=["a.md", "b.md", "c.md"])        # 一次读三个
+read(targets=[{"path": "a.md"}, {"path": "b.md"}, {"path": "c.md"}])   # 一次读三个
 write(files=[{"path": "x.md", "content": …}]) # 一次写三个
 bash(commands=["dir", "python x.py"])        # 一次跑多条
 search_web(queries=["…", "…"])               # 一次搜多组
@@ -130,14 +130,13 @@ base_url=https://api.deepseek.com/v1
 
 ## 会话记录
 
-- `summary.json`：跨任务摘要，下一次规划时可见
-- `detail.json`：按任务号存档的完整明细（每次尝试、工具调用、评审结论）
-
-`detail.json` **不能整份读**——读到的内容会被写回它自己，越读越大。要查历史用 `json_path` 下钻：
+- `summary.json`：跨任务与步骤摘要，下一次规划时可见
+- `detail/`：**每步一个文件**，`task{任务号}_step{步骤号}.json`，内容是那一步的完整明细
+  （每次尝试、工具调用、评审结论）。单文件十来 KB，整份读即可
 
 ```python
-read(path="…/detail.json", json_path="tasks.1.steps[0].attempts[-1].result.content")
-read(path="…/detail.json", json_path="tasks.*.status")
+read(targets=[{"path": "…/detail/task1_step01.json"}])      # 直接读那一步
+read(targets=[{"path": "…/detail", "grep": "task1_step"}])  # 筛出该任务的所有步骤文件
 ```
 
 ## 已知限制

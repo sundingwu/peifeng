@@ -55,8 +55,8 @@ def guard_output(tool: str, output: str, limit: int = OUTPUT_LIMIT) -> str:
         )
     hint = (
         f"（工具 {tool} 的输出有 {size} 字符，超过 {limit:,} 上限：**完整内容已存到 {saved}**，"
-        f"没有截断。用 `read(path=\"{saved}\", offset=..., limit=...)` 分段查看，"
-        "或 `read(grep=\"关键词\")` 直接定位）"
+        f"没有截断。用 `read(targets=[{{\"path\": \"{saved}\", \"offset\": ..., \"limit\": ...}}])` 分段查看，"
+        "或在 targets 里加 \"grep\": \"关键词\" 直接定位）"
     )
     return hint
 
