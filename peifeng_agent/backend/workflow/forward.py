@@ -329,18 +329,8 @@ def build_plan_request(
 
     可用worker清单不在这里传：它随装配进了 planner 的 system 固定层。
     """
-    # 判据放在**任务正文末尾**而不是 system prompt：实测同样的要求写在 system 里，
-    # 模型仍会把「写一份 md」判成 direct（2.7 秒、零调用）；贴着任务说才起作用。
-    task = state.requirement or state.original_request
-    if "【输出形式】" not in task:
-        task = (
-            f"{task}\n\n【输出形式】这个任务是否要求产出文件？"
-            "提到文件名或后缀（md/docx/xlsx/pptx/png/pdf）、或提到落盘/保存/导出/生成一份，"
-            "就**必须返回 plan**，并让每一步的 expected_output 写明产出文件名——"
-            "把内容写在回答里用户拿不到东西。确实只是一段解释或建议时才返回 direct。"
-        )
     return PlanningRequest(
-        task=task,
+        task=state.requirement or state.original_request,
         prior_summary=prior_summary,
         clarifications=clarifications,
     )
