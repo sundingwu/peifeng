@@ -24,9 +24,8 @@ MAX_TOTAL = 24_000
 information = {
     "name": "search_web",
     "description": (
-        "搜索实时网页并返回标题、链接、摘要、日期等原始结果。支持 site:/after:/before:/lang: 语法；"
-        "need_content=true 时请求正文。结果为空表示无匹配，不能据此编造资料。"
-        f"要查多个角度时用 queries 一次搜多个词（词数不限，内部按 {MAX_WORKERS} 个并发排队），不要一个词一轮"
+        "搜索实时网页，返回标题、链接、摘要、日期。"
+        "用于找资料、核对事实；结果为空表示无匹配，不能据此编造。"
     ),
     "parameters": {
         "type": "object",

@@ -31,12 +31,9 @@ from peifeng_agent.backend.utils.text import as_text_list, content_lines, image_
 information = {
     "name": "read",
     "description": (
-        "读文件或列目录——两套参数，看参数名就知道走哪条路。\n"
-        "【读文件】file（或 paths 一次读多个）：不给 grep → 全文，可 offset/limit 分段；"
-        "给 grep → 只回命中的行（关键词或 /正则/）。\n"
-        "【列目录】dir：不给 grep → 列出条目；给 .md 这类后缀 → 只列这类文件；"
-        "给关键词或正则 → 在文件内容里搜；recursive=true 表示一直往下翻，不设层数限制。\n"
-        "grep 三种写法自动识别：.md 这类是后缀（目录用）、/正则/ 或含 [ ] ( ) | ^ $ * + ? \\ 是正则、其余是关键词。"
+        "查看：读文件内容、读一批文件、列目录条目、在其中检索关键词或正则。\n"
+        "docx / xlsx / pptx 自动解析为文本，图片返回尺寸与格式等基本信息。\n"
+        "内容不截断：很大时完整写入临时文件，回执给出路径供分段查看。"
     ),
     "parameters": {
         "type": "object",
@@ -48,7 +45,8 @@ information = {
                       "description": "【读文件】一次读多个文件（与 file 二选一），结果按 ===== 路径 ===== 分段"},
             # ---- 筛选 ----
             "grep": {"type": "string",
-                     "description": "【通用】筛选：读文件时是内容关键词/正则；列目录时是后缀(.md)或关键词/正则"},
+                     "description": "【通用】筛选。读文件时是内容关键词或正则；列目录时是后缀（.md）或关键词/正则。"
+                                    "自动识别：.md 这类当后缀、/…/ 或含 [ ] ( ) | ^ $ * + ? \\ 当正则、其余当关键词"},
             # ---- 仅读文件 ----
             "offset": {"type": "integer", "description": "【读文件】起始行号（1 起；不传从第 1 行开始）"},
             "limit": {"type": "integer", "description": "【读文件】最多返回行数（不传就返回全部）"},

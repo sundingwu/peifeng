@@ -22,17 +22,16 @@ MAX_BATCH = 0  #: 0 = 不限条数（输出量另有上限保护）
 information = {
     "name": "write",
     "description": (
-        "写文本文件：content 整体写入（自动建父目录；**同名文件直接覆盖**，覆盖前自动备份旧版到会话目录）；"
-        "append=true 追加到末尾（日志与长文本分段）；"
-        "edits=[{oldText,newText}] 按原文定点修改，oldText 在原文中唯一且互不重叠。"
-        "用于：生成 .md/.txt/.csv 等文本产出、给日志追加内容、改已有文本的某几处时。"
-        "三种方式互斥；读写不做换行转换"
+        "写文本文件：整体写入、追加、或按原文定点修改（三种方式互斥）。"
+        "用于生成 .md/.txt/.csv 等文本产出、给日志追加内容、改已有文本的某几处。"
+        "读写不做换行转换。"
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "文件路径（相对或绝对）"},
-            "content": {"type": "string", "description": "要写入的内容（与 edits 二选一）"},
+            "content": {"type": "string",
+                        "description": "要写入的完整内容（与 edits 二选一）；自动建父目录，同名文件直接覆盖，覆盖前把旧版备份到会话目录"},
             "append": {"type": "boolean", "description": "true 时追加到文件末尾，默认 false 表示整体写入"},
             "edits": {
                 "type": "array",

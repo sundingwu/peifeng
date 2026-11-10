@@ -19,12 +19,9 @@ from peifeng_agent.backend.utils import chart_kit as kit
 information = {
     "name": "bar_chart",
     "description": (
-        "画柱状图（PNG）：分类之间的数值对比；horizontal=true 时画条形图，适合分类名较长的情况。"
-        "用于：比较各班、各科、各月这类分类之间的高低时。"
-        "数据可直接给 categories + series=[{name, values}]，"
-        "也可用 source={file, sheet?, category, values:[列名]} 从 .xlsx/.csv 按列名取。"
-        "蓝白科研风配色、中文字体、300 dpi 已内置；"
-        "返回出图回执（标题、轴标签、分类、系列范围、实际像素、中文字体）。相对路径以 <项目目录> 为基准"
+        "画柱状图（PNG），展示分类之间的数值对比。"
+        "用于比较各班、各科、各月这类分类的高低。"
+        "蓝白科研风配色、中文字体、300 dpi 已内置；返回出图回执（标题、轴标签、分类、系列范围、实际像素、中文字体）。"
     ),
     "parameters": {
         "type": "object",

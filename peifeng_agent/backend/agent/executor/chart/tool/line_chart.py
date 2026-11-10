@@ -19,12 +19,9 @@ from peifeng_agent.backend.utils import chart_kit as kit
 information = {
     "name": "line_chart",
     "description": (
-        "画折线图（PNG）：展示随时间或连续变量的变化趋势。"
-        "用于：看指标随时间怎么变、比较多条曲线的走势时。"
-        "数据可直接给 categories + series=[{name, values}]，"
-        "也可用 source={file, sheet?, category, values:[列名]} 从 .xlsx/.csv 按列名取。"
-        "蓝白科研风配色、中文字体、300 dpi 已内置；"
-        "返回出图回执（标题、轴标签、分类、系列范围、实际像素、中文字体）。相对路径以 <项目目录> 为基准"
+        "画折线图（PNG），展示随时间或连续变量的变化趋势。"
+        "用于看指标随时间怎么变、比较多条曲线的走势。"
+        "蓝白科研风配色、中文字体、300 dpi 已内置；返回出图回执（标题、轴标签、分类、系列范围、实际像素、中文字体）。"
     ),
     "parameters": {
         "type": "object",

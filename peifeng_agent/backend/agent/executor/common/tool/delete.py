@@ -11,10 +11,8 @@ WILDCARDS = ("*", "?")
 information = {
     "name": "delete",
     "description": (
-        "删除文件或目录，默认删文件与空目录，"
-        "recursive=true 删除整棵目录树（清空清理）。"
-        "用于：清理中间产物、清空临时目录时。删除不可逆，可先 dry_run=true 列出将删除的内容。"
-        "逐项回报成功、跳过、失败"
+        "删除文件或目录。用于清理中间产物、清空临时目录。"
+        "删除不可逆，逐项回报成功、跳过、失败。"
     ),
     "parameters": {
         "type": "object",

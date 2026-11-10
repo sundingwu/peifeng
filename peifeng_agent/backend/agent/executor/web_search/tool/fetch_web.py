@@ -36,10 +36,8 @@ PDF_TIMEOUT = 60
 information = {
     "name": "fetch_web",
     "description": (
-        "抓取 HTTP/HTTPS 内容，返回标题/正文与原始 URL。普通网页走 DeepSeek Fetch；"
-        "**PDF 会自动下载并提取文字**（不用自己 curl，也不要用 type 打印二进制）。"
-        "用于核对搜索结果中的关键事实；访问失败不表示已验证正文。"
-        f"要核对多个页面时用 urls 一次抓多个（个数不限，内部按 {MAX_WORKERS} 个并发排队），不要一个网址一轮"
+        "抓取网页正文，返回标题与文本。PDF 会自动下载并提取文字。"
+        "用于核对搜索结果里的关键事实；访问失败不表示已验证正文。"
     ),
     "parameters": {
         "type": "object",

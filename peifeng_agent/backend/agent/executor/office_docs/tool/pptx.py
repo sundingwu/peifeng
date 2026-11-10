@@ -51,19 +51,9 @@ TYPE_NAMES = {
 information = {
     "name": "pptx",
     "description": (
-        "操作演示文稿（.pptx）：slides 写页，append 追加、overwrite 覆盖重写；给 template 时按模板页复制版式。"
-        "用于：做工作汇报、述职、说课、答辩等演示；需要封面、章节页或两栏对比页；"
-        "要按已有模板（如项目答辩 27 页蓝白模板）逐页套版时。"
-        "两种做法：①从空白画——slides 每项 {type, title, subtitle, bullets, left, right, image, notes}，"
-        "type 取 cover(封面)/section(章节页)/content(内容页)/two_column(左右两栏)，"
-        "theme 声明 {font, colors:{...}, body_sizes}；"
-        "②套模板——template 给模板路径，slides 每项 {template_page, replace, drop, images, notes}："
-        "template_page 是模板第几页（1 起），replace 按文本锚点换文案 {旧文本: 新文本} 并保留原字体字号，"
-        "命中锚点的段落整段换成新文本（不是段内替换），同一占位要分别填时把新文本写成数组、按出现顺序依次填，"
-        "drop 列出要清掉的占位文本（如 照片、xxxxxxxx），images 追加图片 [{path, left_cm, top_cm, width_cm}]。"
-        "想先看模板每页有什么可换的文本锚点，把 describe_template 设为 true；"
-        "要改**已有文件**的版面，先把 inspect 设为 true 看清每页对象的位置/尺寸/字号，再一次改完。"
-        "返回结构回执：每页类型、标题、要点条数、图片与备注情况"
+        "操作演示文稿（.pptx）：从空白页写，或按已有模板逐页套版。"
+        "用于做工作汇报、述职、说课、答辩等演示，需要封面、章节页或两栏对比页时。"
+        "返回结构回执：每页类型、标题、要点条数、图片与备注情况。"
     ),
     "parameters": {
         "type": "object",
@@ -71,7 +61,17 @@ information = {
             "file": {"type": "string", "description": "目标文件（.pptx，放 <工作目录> 下）"},
             "slides": {
                 "type": "array",
-                "description": "页列表，每项 {type, title, subtitle, bullets, left, right, image, notes}",
+                "description": (
+                    "页列表，两种写法看给不给 template：\n"
+                    "①从空白画：每项 {type, title, subtitle, bullets, left, right, image, notes}，"
+                    "type 取 cover（封面）/ section（章节页）/ content（内容页）/ two_column（左右两栏）。\n"
+                    "②套模板：每项 {template_page, replace, drop, images, notes}——"
+                    "template_page 是模板第几页（1 起）；replace 按文本锚点换文案 {旧文本: 新文本}，"
+                    "保留原字体字号，命中锚点的段落整段换成新文本（不是段内替换），"
+                    "同一占位要分别填时把新文本写成数组、按出现顺序依次填；"
+                    "drop 列出要清掉的占位文本（如 照片、xxxxxxxx）；"
+                    "images 追加图片 [{path, left_cm, top_cm, width_cm}]"
+                ),
                 "items": {},
             },
             "template": {

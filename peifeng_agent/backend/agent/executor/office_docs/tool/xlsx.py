@@ -35,15 +35,9 @@ ALIGNS = ("left", "center", "right")
 information = {
     "name": "xlsx",
     "description": (
-        "操作 Excel 工作簿（.xlsx）：sheets 写工作表，overwrite 覆盖重写。"
-        "用于：生成成绩单、统计表、台账等 .xlsx；组织多张表（明细加汇总）；套用数字格式与冻结首行时。"
-        "sheets 每项：{name, header, rows, widths, number_formats, merge, freeze}——"
-        "header 表头（加粗）、rows 二维数据行、widths 列宽（{\"A\": 12} 或数组，字符数）、"
-        "number_formats 数字格式（{\"D\": \"#,##0.00\", \"E\": \"0.0%\"}）、"
-        "merge 合并区域（[\"A1:C1\"]）、freeze 冻结位置（\"A2\" 冻结首行）。"
-        "theme 声明风格：{font, size, header_bold, header_fill(十六进制色), border, align}；"
-        "**工具本身不带默认字体字号**：theme 不给就不设字体（由 Excel 默认决定），参数从技能里取。"
-        "返回结构回执：每表列数行数、表头、列宽、数字格式"
+        "操作 Excel 工作簿（.xlsx）：写工作表或覆盖重写。"
+        "用于生成成绩单、统计表、台账，组织多张表（明细加汇总），套数字格式与冻结首行。"
+        "返回结构回执：每表列数行数、表头、列宽、数字格式。"
     ),
     "parameters": {
         "type": "object",
@@ -51,12 +45,20 @@ information = {
             "file": {"type": "string", "description": "目标文件（.xlsx，放 <工作目录> 下）"},
             "sheets": {
                 "type": "array",
-                "description": "工作表列表，每项 {name, header, rows, widths, number_formats, merge, freeze}",
+                "description": (
+                    "工作表列表，每项 {name, header, rows, widths, number_formats, merge, freeze}："
+                    "header 表头（加粗）、rows 二维数据行、widths 列宽（{\"A\": 12} 或数组，字符数）、"
+                    "number_formats 数字格式（{\"D\": \"#,##0.00\", \"E\": \"0.0%\"}）、"
+                    "merge 合并区域（[\"A1:C1\"]）、freeze 冻结位置（\"A2\" 冻结首行）"
+                ),
                 "items": {},
             },
             "theme": {
                 "type": "object",
-                "description": "风格定义（字体字号、表头填充、边框、对齐）；不给就不设字体，参数从技能取",
+                "description": (
+                    "风格定义 {font, size, header_bold, header_fill(十六进制色), border, align}；"
+                    "**工具本身不带默认字体字号**——不给就不设字体（由 Excel 默认决定），参数从技能里取"
+                ),
             },
             "style": {
                 "type": "object",

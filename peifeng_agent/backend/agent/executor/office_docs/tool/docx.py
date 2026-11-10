@@ -54,21 +54,9 @@ ALIGNS = {
 information = {
     "name": "docx",
     "description": (
-        "操作 Word 文档（.docx）：blocks 写内容，append 追加（自动继承原文样式）、overwrite 覆盖重写、patch 定点改段落。"
-        "用于：生成课程报告、实验报告、总结等 .docx；给已有文档续写；改已有文档的某几段（patch 保留原样式）时。"
-        "要改已有文档的某几段，先把 inspect 设为 true 看清段落序号与样式，再用 patch 一次改完。"
-        "blocks 每项一个块：{type: title|heading|paragraph|table|image|page_break}——"
-        "title 用 text；heading 用 text + level(1|2|3)；paragraph 用 text，可选 style(body|signature|caption) "
-        "与 align/font/size/bold/indent/line_spacing 覆盖；table 用 header + rows，可选 widths、header_bold、"
-        "header_fill（表头底色，6 位十六进制如 D9E2F3）、stripe（数据行隔行铺浅色）；"
-        "image 用 path 与 width_cm；page_break 分页。"
-        "theme 声明风格：{page:{top,bottom,left,right}, "
-        "styles:{title|heading1..3|body|caption|signature:{font,size,bold,align,indent,line_spacing,space_before,space_after}}, "
-        "table:{font,size,header_bold,border,align}}，size 用磅、indent 与 line_spacing 用磅"
-        "（行距也可给倍数如 1.5）。**工具本身不带任何默认字体字号**：theme 不给就是无格式（由 Word 默认决定），"
-        "版式参数从技能里取（如 summary_docx 的 theme 段），照抄进来。"
-        "patch 写法：[{index, text}] 按段号（1 起，与回执清单对应）或 [{match, text}] 按原文片段唯一匹配。"
-        "返回结构回执：段落分布、字体字号、页边距、逐段清单，够用来核对版式"
+        "操作 Word 文档（.docx）：写内容、追加到末尾、覆盖重写、定点改段落。"
+        "用于生成课程报告、实验报告、总结等 .docx，给已有文档续写，或改已有文档的某几段（保留原样式）。"
+        "返回结构回执：段落分布、字体字号、页边距、逐段清单，够用来核对版式。"
     ),
     "parameters": {
         "type": "object",
@@ -76,12 +64,28 @@ information = {
             "file": {"type": "string", "description": "目标文件（.docx，放 <工作目录> 下）"},
             "blocks": {
                 "type": "array",
-                "description": "内容块列表，按顺序写入；每项 {type, ...}，type 见工具描述",
+                "description": (
+                    "内容块列表，按顺序写入。每项一个块，用 type 区分：\n"
+                    "title（text）标题；heading（text + level 取 1|2|3）；"
+                    "paragraph（text，可选 style 取 body|signature|caption，"
+                    "以及 align/font/size/bold/indent/line_spacing 覆盖）；"
+                    "table（header + rows，可选 widths、header_bold、"
+                    "header_fill 表头底色给 6 位十六进制如 D9E2F3、stripe 数据行隔行铺浅色）；"
+                    "image（path 与 width_cm）；page_break 分页。"
+                ),
                 "items": {},
             },
             "theme": {
                 "type": "object",
-                "description": "风格定义（页边距、各类段落的字体字号行距、表格样式）；不给就无格式，参数从技能取",
+                "description": (
+                    "风格定义：{page:{top,bottom,left,right}, "
+                    "styles:{title|heading1..3|body|caption|signature:"
+                    "{font,size,bold,align,indent,line_spacing,space_before,space_after}}, "
+                    "table:{font,size,header_bold,border,align}}。"
+                    "size 用磅，indent 与 line_spacing 用磅（行距也可给倍数如 1.5）。"
+                    "**工具本身不带任何默认字体字号**——不给就是无格式（由 Word 默认决定），"
+                    "版式参数从技能里取（如 summary_docx 的 theme 段），照抄进来"
+                ),
             },
             "style": {
                 "type": "object",
@@ -104,7 +108,10 @@ information = {
             "overwrite": {"type": "boolean", "description": "true 时覆盖同名文件重写（改稿用）"},
             "patch": {
                 "type": "array",
-                "description": "定点修改已有段落：[{index, text}] 或 [{match, text}]，保留原样式",
+                "description": (
+                    "定点修改已有段落，保留原样式：[{index, text}] 按段号（1 起，与回执清单对应），"
+                    "或 [{match, text}] 按原文片段唯一匹配。先用 inspect 看一眼段号再改"
+                ),
                 "items": {},
             },
             "script": {

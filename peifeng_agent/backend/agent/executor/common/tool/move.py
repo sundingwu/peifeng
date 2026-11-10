@@ -27,19 +27,17 @@ VERBS = {"copy": "复制", "move": "移动", "rename": "重命名"}
 information = {
     "name": "move",
     "description": (
-        "搬动文件：action=copy 复制、move 移动、rename 重命名（同一目录内改名）。"
-        "items=[{path, target}] 条数不限，target 写目录则移入该目录并保留原名。"
-        "用于：归档到子目录、批量改名、复制留底时。"
-        "dry_run=true 先预演；on_conflict=rename（默认，同名加 -1 后缀）/ skip / overwrite 决定同名处理。"
-        "逐项回报成功、跳过、失败"
+        "搬动文件：复制、移动、重命名。用于归档到子目录、批量改名、复制留底。"
+        "逐项回报成功、跳过、失败。"
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["copy", "move", "rename"], "description": "要做的搬动方式"},
+            "action": {"type": "string", "enum": ["copy", "move", "rename"],
+                       "description": "copy 复制（保留原文件）/ move 移动 / rename 同目录内改名"},
             "items": {
                 "type": "array",
-                "description": "待处理项（条数不限）",
+                "description": "待搬动项 [{path, target}]，条数不限；target 写目录则移入该目录并保留原名",
                 "items": {
                     "type": "object",
                     "properties": {

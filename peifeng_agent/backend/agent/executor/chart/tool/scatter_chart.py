@@ -19,12 +19,9 @@ from peifeng_agent.backend.utils import chart_kit as kit
 information = {
     "name": "scatter_chart",
     "description": (
-        "画散点图（PNG）：观察两个数值变量之间的关系（相关、离群点、分群）。"
-        "用于：看两个量是否同向变化、找异常点时。"
-        "数据可直接给 x + y 两个等长数组，"
-        "也可用 source={file, sheet?, category, values:[x列, y列]} 从 .xlsx/.csv 取。"
-        "蓝白科研风配色、中文字体、300 dpi 已内置；"
-        "返回出图回执（标题、轴标签、点数与取值范围、实际像素、中文字体）。相对路径以 <项目目录> 为基准"
+        "画散点图（PNG），观察两个数值变量之间的关系：相关、离群点、分群。"
+        "用于看两个量是否同向变化、找异常点。"
+        "蓝白科研风配色、中文字体、300 dpi 已内置；返回出图回执（标题、轴标签、点数与取值范围、实际像素、中文字体）。"
     ),
     "parameters": {
         "type": "object",

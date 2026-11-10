@@ -12,18 +12,13 @@ from pathlib import Path
 
 from peifeng_agent.backend.utils.text import IMAGE_SUFFIXES, as_text_list, image_info
 
-#: 一次最多看几张图（每张都要过一次模型，太多了会挤占上下文）
-MAX_BATCH = 0  #: 0 = 不限条数（输出量另有上限保护）
-
 information = {
     "name": "image_describe",
     "description": (
-        "看一眼图片并回答针对它的问题：返回模型对图像内容的文字描述（标题是否完整、文字有没有溢出或重叠、"
-        "图例与数据对不对得上、截图界面里有什么）。"
-        "用于：核对生成出来的图或渲染出来的页面是否符合预期——图表出完看标题与标签是否正常、"
-        "文档与演示渲染成图后看版面是否错位、读别人给的截图取信息时。"
-        "path 为图片路径（.png/.jpg 等）；question 写清要它回答什么，比只写「描述这张图」有用得多。"
-        "看大图时用 max_side 控制送入尺寸（默认 1400 像素，太大费 token、太小看不清小字）"
+        "看一眼图片并回答针对它的问题：返回模型对图像内容的文字描述"
+        "（标题是否完整、文字有没有溢出或重叠、图例与数据对不对得上、截图界面里有什么）。"
+        "用于核对生成出来的图或渲染出来的页面是否符合预期——图表出完看标题与标签、"
+        "文档与演示渲染成图后看版面是否错位、读别人给的截图取信息。"
     ),
     "parameters": {
         "type": "object",
@@ -60,7 +55,7 @@ def image_describe(
     ``paths`` 一次看多张（逐张提问、分段返回）：核对多页版面时一次问完，
     比"一张图一次调用"少很多次往返。
     """
-    batch = as_text_list(paths, "paths", MAX_BATCH)
+    batch = as_text_list(paths, "paths", 0)
     if batch:
         return describe_many(batch, question, max_side, vision, base_dir)
     if not str(path or "").strip():
