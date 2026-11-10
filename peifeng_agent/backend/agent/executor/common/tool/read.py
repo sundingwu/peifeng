@@ -41,51 +41,28 @@ information = {
             "targets": {
                 "type": "array",
                 "items": {
-                    "oneOf": [
-                        {"type": "string"},
-                        {
-                            "type": "object",
-                            "properties": {
-                                "path": {"type": "string",
-                                         "description": "要看的路径：文件→读内容；目录→列出其中的条目"},
-                                "grep": {"type": "string",
-                                         "description": "从这一项的输出里筛出含它的行（不去读别的文件）"},
-                                "regex": {"type": "boolean",
-                                          "description": "这一项的 grep 是否按正则（默认 false 字面量）"},
-                                "offset": {"type": "integer", "description": "这一项从第几行开始（默认 1）"},
-                                "limit": {"type": "integer", "description": "这一项最多返回多少行"},
-                                "recursive": {"type": "boolean",
-                                              "description": "这一项是目录时是否连子目录一起列"},
-                            },
-                            "required": ["path"],
-                        },
-                    ]
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string",
+                                 "description": "要看的路径：文件→读内容；目录→列出其中的条目"},
+                        "grep": {"type": "string",
+                                 "description": "从这一项的输出里筛出含它的行（不去读别的文件）"},
+                        "regex": {"type": "boolean",
+                                  "description": "这一项的 grep 是否按正则（默认 false 字面量）"},
+                        "offset": {"type": "integer", "description": "这一项从第几行开始（默认 1）"},
+                        "limit": {"type": "integer", "description": "这一项最多返回多少行"},
+                        "recursive": {"type": "boolean",
+                                      "description": "这一项是目录时是否连子目录一起列"},
+                    },
+                    "required": ["path"],
                 },
-                "description": "要看的全部目标，每项是一个路径，或一个 {path, grep?, regex?, offset?, "
-                               "limit?, recursive?} 对象——各项目标需求不同时用对象写法，参数只对它生效。"
+                "description": "要看的全部目标。每项一个对象，参数只对它自己生效；"
                                "结果按顺序一一对应，每段以 ===== 路径 ===== 开头。",
             },
         },
         "required": [],
     },
 }
-def filter_lines(body: str, pattern: str, regex: bool,
-                 offset: Optional[int], limit: Optional[int], label: str) -> str:
-    """从 body 里筛出含 pattern 的行；行号保留原文位置，再按 offset/limit 分页。
-
-    ``grep`` 只作用于**已经拿到的文本**——不会因为给了关键词就去读别的文件。
-    """
-    matcher = compile(pattern, regex)
-    lines = body.splitlines()
-    found = [(index, line) for index, line in enumerate(lines, 1) if matcher.search(line)]
-    if not found:
-        return f"{label} 未找到 {pattern!r}（共 {len(lines)} 行）"
-    selected, more = page(found, offset, limit)
-    head = f"{label} 命中 {len(found)} 处（共 {len(lines)} 行）"
-    rows = [f"{number}:{line}" for number, line in selected]
-    if more:
-        rows.append(more)
-    return "\n".join([head, *rows])
 
 
 def page(items: list, offset: Optional[int], limit: Optional[int]) -> tuple[list, str]:
@@ -112,94 +89,97 @@ def page(items: list, offset: Optional[int], limit: Optional[int]) -> tuple[list
 Target = namedtuple("Target", "path grep regex offset limit recursive")
 
 
-def read(targets: Any = None, base_dir=None, **extra) -> str:
+def read(targets: Any = None, base_dir=None) -> str:
     """看文件内容，或探查目录里有什么。
 
-    ``targets`` 是要看的全部目标，每项自带参数——一个文件的分页、一个目录的递归、
-    另一个文件的筛选可以各按各的来。输出按 targets 的顺序一一对应。
+    ``targets`` 是一组目标，每项自带参数——一个文件的分页、一个目录的递归、
+    另一个文件的筛选各按各的来；输出按传入顺序一一对应。
 
     ``grep`` 只从**这一项的输出**里筛行，不会去读你没指定的文件。
     """
-    # 宽容：模型偶尔按旧习惯传 path / file / dir / paths（顶层那套写法），
-    # 直接当 targets 用，省掉一次无谓的失败往返
-    if targets is None:
-        for legacy in ("path", "paths", "file", "dir"):
-            if extra.get(legacy):
-                targets = extra[legacy]
-                break
     entries = normalize(targets)
     if not entries:
-        raise RuntimeError(
-            "read 需要 targets：一个路径，或一组目标；每项形如 "
-            '{"path": "...", "grep": "…", "limit": 20}'
-        )
+        raise RuntimeError('read 需要 targets：[{"path": "..."}, ...]')
     if len(entries) == 1:
-        return read_one(entries[0], base_dir=base_dir)
+        return read_target(entries[0], base_dir=base_dir)
     return read_batch(entries, base_dir=base_dir)
 
 
 def normalize(targets: Any) -> List[Target]:
-    """把 targets 归一成 Target 列表。
-
-    宽容三种写法，省得模型因为"少包一层数组"被卡住：
-    ``"a.md"`` / ``{"path": "a.md", ...}`` / ``["a.md", {"path": "src", "recursive": true}]``
-    """
+    """把 targets 校验成 Target 列表：必须是 ``[{"path": ...}, ...]``。"""
     if targets is None or targets == "":
         return []
-    raw = targets if isinstance(targets, list) else [targets]
+    if not isinstance(targets, list):
+        raise RuntimeError(f'targets 需要数组：[{{"path": "..."}}]（当前：{type(targets).__name__}）')
     entries: List[Target] = []
-    for index, item in enumerate(raw):
-        if isinstance(item, str):
-            if item.strip():
-                entries.append(Target(item.strip(), "", False, None, None, False))
-            continue
-        if isinstance(item, dict):
-            target = str(item.get("path") or "").strip()
-            if not target:
-                raise RuntimeError(f'targets[{index}] 缺少 "path" 字段：{item!r}')
-            entries.append(Target(
-                target,
-                str(item.get("grep") or ""),
-                bool(item.get("regex", False)),
-                item.get("offset"),
-                item.get("limit"),
-                bool(item.get("recursive", False)),
-            ))
-            continue
-        raise RuntimeError(f"targets[{index}] 只能是字符串或对象：{item!r}")
+    for index, item in enumerate(targets):
+        if not isinstance(item, dict):
+            raise RuntimeError(f"targets[{index}] 需要对象：{item!r}")
+        target = str(item.get("path") or "").strip()
+        if not target:
+            raise RuntimeError(f'targets[{index}] 缺少 "path" 字段：{item!r}')
+        entries.append(Target(
+            target,
+            str(item.get("grep") or ""),
+            bool(item.get("regex", False)),
+            item.get("offset"),
+            item.get("limit"),
+            bool(item.get("recursive", False)),
+        ))
     return entries
 
 
-def read_one(entry: Target, *, base_dir=None) -> str:
-    """拿这个目标的文本：目录→条目清单，文件→内容；再筛行、再分页。"""
+def read_target(entry: Target, *, base_dir=None) -> str:
+    """按目标自己的类型分派：目录走 :func:`read_dir`，文件走 :func:`read_file`。"""
     target = resolve(entry.path, base_dir)
     if target.is_dir():
-        body = list_entries(target, entry.recursive)
-    elif target.is_file():
-        if is_image(target):
-            return image_info(target)
-        body = "\n".join(content_lines(target))
-    else:
-        raise RuntimeError(f"路径不存在：{entry.path}")
+        return read_dir(target, entry)
+    if target.is_file():
+        return read_file(target, entry)
+    raise RuntimeError(f"路径不存在：{entry.path}")
 
-    if entry.grep:
-        return filter_lines(body, entry.grep, entry.regex, entry.offset, entry.limit, entry.path)
 
+def read_file(target: Path, entry: Target) -> str:
+    """读文件内容；给了 grep 就只回命中的行，再按 offset/limit 分页。
+
+    图片没有文本内容，只给格式与尺寸——用来核对出图是否成功。
+    """
+    if is_image(target):
+        return image_info(target)
+    return shape("\n".join(content_lines(target)), entry, str(target))
+
+
+def read_dir(target: Path, entry: Target) -> str:
+    """列出目录里的条目；``recursive`` 决定要不要连子目录一起展开（**只列名字，不读内容**）。"""
+    return shape(list_entries(target, entry.recursive), entry, str(target))
+
+
+def shape(body: str, entry: Target, label: str) -> str:
+    """两个业务函数共用的收尾：先筛行、再分页、最后统一加行号。"""
     lines = body.splitlines()
-    selected, more = page(list(enumerate(lines, 1)), entry.offset, entry.limit)
-    rows = [f"{number}:{line}" for number, line in selected]
+    if entry.grep:
+        matcher = compile(entry.grep, entry.regex)
+        found = [(number, line) for number, line in enumerate(lines, 1) if matcher.search(line)]
+        if not found:
+            return f"{label} 未找到 {entry.grep!r}（共 {len(lines)} 行）"
+        selected, more = page(found, entry.offset, entry.limit)
+        rows = [f"{number}:{line}" for number, line in selected]
+        head = f"{label} 命中 {len(found)} 处（共 {len(lines)} 行）"
+    else:
+        selected, more = page(list(enumerate(lines, 1)), entry.offset, entry.limit)
+        rows = [f"{number}:{line}" for number, line in selected]
+        head = ""
     if more:
         rows.append(more)
+    if head:
+        return "\n".join([head, *rows])
     return "\n".join(rows) if rows else "（空）"
 
 
 def read_batch(entries: List[Target], *, base_dir=None) -> str:
-    """并发看多个目标：每段前带 ``===== 路径 =====``，顺序与传入一致。
-
-    每一项带着自己的参数（见 :func:`normalize`），文件和目录可以混放。
-    """
+    """并发看多个目标：每段前带 ``===== 路径 =====``，顺序与传入一致。"""
     results = run_parallel_safe(
-        lambda entry: read_one(entry, base_dir=base_dir),
+        lambda entry: read_target(entry, base_dir=base_dir),
         entries,
         workers=READ_WORKERS,
         thread_prefix="read",
@@ -208,6 +188,7 @@ def read_batch(entries: List[Target], *, base_dir=None) -> str:
     for entry, (body, error) in zip(entries, results):
         blocks.append(f"===== {entry.path} =====\n{body if error is None else f'错误：{error}'}")
     return "\n\n".join(blocks)
+
 
 def compile(keyword: str, regex: bool):
     """把关键词编译成匹配器：默认按子串、忽略大小写；regex=True 时按正则。"""
