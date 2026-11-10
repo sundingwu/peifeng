@@ -37,12 +37,34 @@ information = {
     "parameters": {
         "type": "object",
         "properties": {
-            "path": {"type": ["string", "array"], "items": {"type": "string"},
-                     "description": "要看的路径：一个字符串，或一组路径的数组。"
-                                    "文件→读内容；目录→列出其中的条目。传数组时结果按 ===== 路径 ===== 分段"},
+            "path": {
+                "type": ["string", "array"],
+                "items": {
+                    "oneOf": [
+                        {"type": "string"},
+                        {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string", "description": "这一项的路径"},
+                                "grep": {"type": "string", "description": "这一项的筛选（覆盖顶层 grep）"},
+                                "regex": {"type": "boolean", "description": "这一项是否按正则"},
+                                "offset": {"type": "integer", "description": "这一项的起始行"},
+                                "limit": {"type": "integer", "description": "这一项最多几行"},
+                                "recursive": {"type": "boolean", "description": "这一项是否递归列目录"},
+                            },
+                            "required": ["path"],
+                        },
+                    ]
+                },
+                "description": "要看的路径：一个字符串，或一组路径的数组。文件→读内容；目录→列出其中的条目。"
+                               "数组元素可以是字符串（沿用顶层参数），也可以是 {path, grep?, regex?, offset?, "
+                               "limit?, recursive?} 对象——各项需求不同时用对象写法，只对这一项生效。"
+                               "传数组时结果按 ===== 路径 ===== 分段",
+            },
             "grep": {"type": "string",
                      "description": "从**本次输出**里筛出含它的行（不会去读你未指定的文件）。"
-                                    "默认按字面量匹配，`C++`、`file(name)`、`/usr/bin/` 都照原样找"},
+                                    "默认按字面量匹配，`C++`、`file(name)`、`/usr/bin/` 都照原样找。"
+                                    "这是所有目标的默认值，path 里的对象可以各自覆盖"},
             "regex": {"type": "boolean",
                       "description": "grep 是否按正则匹配（默认 false 按字面量）"},
             "offset": {"type": "integer", "description": "从第几行开始（默认 1）"},
@@ -107,19 +129,58 @@ def read(
 
     ``grep`` 只从**本次输出**里筛行，不会去读你没指定的文件——想搜一批文件的内容，
     把它们的路径放进 ``path`` 数组一次读，再让 grep 筛。
+
+    顶层参数是**默认值**：``path`` 数组里某一项写成对象就能覆盖它，只对这一项生效。
     """
-    targets = as_text_list(path, "path", 0)
-    if not targets:
+    entries = normalize(path, grep, regex, offset, limit, recursive)
+    if not entries:
         raise RuntimeError("read 需要 path：一个路径，或一组路径的数组")
-    if len(targets) == 1:
+    if len(entries) == 1:
+        target, one_grep, one_regex, one_offset, one_limit, one_recursive = entries[0]
         return read_one(
-            targets[0], grep=grep, regex=regex, offset=offset, limit=limit,
-            recursive=recursive, base_dir=base_dir,
+            target, grep=one_grep, regex=one_regex, offset=one_offset,
+            limit=one_limit, recursive=one_recursive, base_dir=base_dir,
         )
-    return read_batch(
-        targets, grep=grep, regex=regex, offset=offset, limit=limit,
-        recursive=recursive, base_dir=base_dir,
-    )
+    return read_batch(entries, base_dir=base_dir)
+
+
+def normalize(
+    path: Any,
+    grep: str,
+    regex: bool,
+    offset: Optional[int],
+    limit: Optional[int],
+    recursive: bool,
+) -> List[tuple[str, str, bool, Optional[int], Optional[int], bool]]:
+    """把 ``path`` 归一成 ``[(目标, grep, regex, offset, limit, recursive), ...]``。
+
+    元素是字符串就沿用顶层参数；是对象就用它自己的（缺的字段仍取顶层）。
+    这样"列 A 目录且递归"和"看 B 文件第 10-20 行"可以在一次调用里各按各的来。
+    """
+    if path is None or path == "":
+        return []
+    raw = path if isinstance(path, list) else [path]
+    entries: List[tuple[str, str, bool, Optional[int], Optional[int], bool]] = []
+    for index, item in enumerate(raw):
+        if isinstance(item, str):
+            if item.strip():
+                entries.append((item.strip(), grep, regex, offset, limit, recursive))
+            continue
+        if isinstance(item, dict):
+            target = str(item.get("path") or item.get("file") or "").strip()
+            if not target:
+                raise RuntimeError(f'path[{index}] 缺少 "path" 字段：{item!r}')
+            entries.append((
+                target,
+                str(item.get("grep", grep) or ""),
+                bool(item.get("regex", regex)),
+                item.get("offset", offset),
+                item.get("limit", limit),
+                bool(item.get("recursive", recursive)),
+            ))
+            continue
+        raise RuntimeError(f"path[{index}] 只能是字符串或对象：{item!r}")
+    return entries
 
 
 def read_one(
@@ -154,32 +215,23 @@ def read_one(
     return "\n".join(rows) if rows else "（空）"
 
 
-def read_batch(
-    items: List[str],
-    *,
-    grep: str = "",
-    regex: bool = False,
-    offset: Optional[int] = None,
-    limit: Optional[int] = None,
-    recursive: bool = False,
-    base_dir=None,
-) -> str:
+def read_batch(entries: List[tuple], *, base_dir=None) -> str:
     """一次看多个目标：并发跑，每段前带 ``===== 路径 =====``（条数与总字数都不设限）。
 
-    文件和目录可以混放——各自按类型处理。grep 对每一段各筛一次。
+    每一项带着自己的参数（见 :func:`normalize`），文件和目录可以混放。
     """
     results = run_parallel_safe(
-        lambda item: read_one(
-            item, grep=grep, regex=regex, offset=offset, limit=limit,
-            recursive=recursive, base_dir=base_dir,
+        lambda entry: read_one(
+            entry[0], grep=entry[1], regex=entry[2], offset=entry[3],
+            limit=entry[4], recursive=entry[5], base_dir=base_dir,
         ),
-        items,
+        entries,
         workers=READ_WORKERS,
         thread_prefix="read",
     )
     blocks: List[str] = []
-    for item, (body, error) in zip(items, results):
-        blocks.append(f"===== {item} =====\n{body if error is None else f'错误：{error}'}")
+    for entry, (body, error) in zip(entries, results):
+        blocks.append(f"===== {entry[0]} =====\n{body if error is None else f'错误：{error}'}")
     return "\n\n".join(blocks)
 
 
