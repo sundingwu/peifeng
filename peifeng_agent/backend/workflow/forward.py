@@ -319,6 +319,35 @@ def build_review_request(
     )
 
 
+#: 任务里出现这些，说明**必须产出文件**：此时不允许 planner 返回 direct——
+#: 内容写在回答里等于没交付（实测 planner 会把"写一份 md"判成 direct，任务秒结束、零产出）
+FILE_INTENT = re.compile(
+    r"(?:\.(?:md|txt|csv|json|docx|xlsx|pptx|png|jpe?g|pdf)\b|文件|落盘|保存到|导出|存成|写成|生成一份)"
+)
+#: 弱信号：既有"写/生成"这类动作，又提到某个文件格式（如「写一份说明 md」——后缀前面没有点）
+FILE_VERB = re.compile(r"(写|生成|做|整理|导出|存|保存|给我一份|来一份)")
+FILE_SUFFIX = re.compile(r"(?:md|txt|csv|json|docx|xlsx|pptx|png|jpe?g|pdf)\b", re.IGNORECASE)
+
+#: planner 想看"我直接答"时用的纠正提示
+DIRECT_REJECT_HINT = (
+    "【纠正】这个任务要求产出**文件**（提到文件名、落盘、导出或保存），不能返回 direct——"
+    "把内容写在回答里用户拿不到东西。请返回 plan：每一步的 expected_output 写明产出文件名，"
+    "由 worker 真正写文件。"
+)
+
+
+def needs_file(task: str) -> bool:
+    """任务是否要求产出文件（决定 direct 是否可接受）。
+
+    强信号（``.md``、``文件``、``落盘``、``导出``…）直接算；
+    弱信号看"动作 + 格式"的组合：``写一份说明 md`` 里后缀前面没有点，只看强信号会漏掉。
+    """
+    text = task or ""
+    if FILE_INTENT.search(text):
+        return True
+    return bool(FILE_VERB.search(text) and FILE_SUFFIX.search(text))
+
+
 def build_plan_request(
     state: TaskState,
     *,
@@ -982,6 +1011,8 @@ class TaskOrchestrator:
         """
         asked_once = False
         forced_once = False
+        #: 已经把"要文件就不能 direct"的纠正提示给过一次了
+        rejected_direct = False
         clarifications = "\n".join(self.task.user_decisions)
         # planner 只要摘要，不要产物正文路径：给它路径它会去读，实测算过 15 轮全用在读历史
         prior_summary = build_session_summary(self.session, with_paths=False)
@@ -997,6 +1028,13 @@ class TaskOrchestrator:
                 self.task.user_decisions.extend(updates)
                 clarifications = append(clarifications, "\n".join(updates))
                 continue
+            if result.mode == "direct" and not rejected_direct:
+                target = self.task.requirement or self.task.original_request
+                if needs_file(target):
+                    # 要产出文件却返回 direct：纠正一次，让它给出真正的计划
+                    rejected_direct = True
+                    clarifications = append(clarifications, DIRECT_REJECT_HINT)
+                    continue
             if result.mode != "clarify":
                 return result
             if forced_once:

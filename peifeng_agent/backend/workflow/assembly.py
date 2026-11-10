@@ -42,10 +42,24 @@ class AgentRegistry:
     def executor_names(self) -> list[str]:
         return [spec["name"] for spec in self.specs]
 
+    #: 回退时的优先顺序：coding 最通用（能跑脚本、读写文件），其次文件管理、文档、图表
+    DEFAULT_PRIORITY = ("coding", "file_manager", "office_docs", "chart", "web_search")
+
     @property
     def default_executor(self) -> str:
-        """默认worker：计划里 worker 为空或未知时回退到它。"""
-        return self.executor_names[0] if self.specs else ""
+        """默认worker：计划里 worker 为空或未知时回退到它。
+
+        **不能取"目录扫描的第一个"**——那个顺序由文件名决定，实测第一个是 ``chart``：
+        于是任何写错的 worker 名都会落到"只会画图"的角色上，任务直接做不了。
+        按能力从宽到窄排：coding（通用）→ file_manager → office_docs → chart → web_search。
+        """
+        available = self.executor_names
+        if not available:
+            return ""
+        for name in self.DEFAULT_PRIORITY:
+            if name in available:
+                return name
+        return available[0]
 
 
 def build_registry(settings: Settings, provider: Any = None) -> AgentRegistry:
