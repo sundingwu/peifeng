@@ -1,10 +1,14 @@
-"""read 工具（看）：定位、浏览、查看内容、搜索过滤。
+"""read 工具（看）：读文件内容、列目录。
 
-一个工具覆盖四种读法：
+两套参数，看名字就知道走哪条路：
 
-- path 是文件：内容按行输出（带行号，可用 offset/limit 分页）；``.docx``/``.xlsx``/``.pptx`` 由文档库解析为文本
-- path 是目录：列出条目（名称、类型、大小、修改时间），可用 pattern 通配过滤、depth 递归
-- 给了 ``grep``：按行检索关键词或正则，返回命中行号与内容；path 是目录时按 depth 跨目录递归检索
+- ``file``（或 ``paths`` 批量）：内容按行输出（带行号，可 offset/limit 分段）；
+  ``.docx``/``.xlsx``/``.pptx`` 由文档库解析为文本；给 ``grep`` 就只回命中的行
+- ``dir``：列出条目（名称、类型、大小、修改时间）；给后缀（``.md``）只列这类文件，
+  给关键词/正则就在文件内容里搜，``recursive=True`` 一直往下翻
+
+**不设人为上限**：命中多少给多少、目录多深翻多深、批量多少读多少——
+输出过大由工具层的统一兜底处理（超限落盘并把路径给模型），不在这里切。
 
 工具约定：文件头 information 元数据 + 与 name 同名的业务函数；成功 return 文本，失败抛 RuntimeError。
 
@@ -23,26 +27,6 @@ from pathlib import Path
 from typing import Any, List, Optional
 
 from peifeng_agent.backend.utils.text import as_text_list, content_lines, image_info, is_image, is_readable
-
-#: 目录递归的最大层数（1 = 只看当前层）
-MAX_DEPTH = 3
-
-#: grep 的单次命中上限（再多就缩小关键词）
-MAX_GREP_HITS = 500
-
-#: grep 单次最多扫描的文件数（跨目录时文件更多，但仍要有上限）
-MAX_GREP_FILES = 2000
-
-#: grep 上下文最多几行
-MAX_CONTEXT = 3
-
-#: 一次 paths 批量读的上限：纯本地读取，只防呆（返回量另有 MAX_BATCH_CHARS 兜底）
-MAX_BATCH = 0  #: 0 = 不限条数（输出量另有上限保护）
-#: 单次批量返回的总字数上限：批量把"读很多文件"变成一次调用，也必须防它一次灌爆上下文
-MAX_BATCH_CHARS = 60_000
-
-#: 路径片段：``a.b[0].c`` → ["a", "b", 0, "c"]
-_JSON_TOKEN = re.compile(r"([^.\[\]]+)|\[(-?\d+|\*)\]")
 
 information = {
     "name": "read",
@@ -74,10 +58,6 @@ information = {
         "required": [],
     },
 }
-
-
-#: 目录递归时的层数上限：给个很大的值表示"一直往下翻"（不暴露给模型）
-_RECURSIVE_DEPTH = 64
 
 
 def classify_grep(value: str) -> tuple[str, str]:
@@ -123,7 +103,7 @@ def read(
     - 给关键词或正则 → 在文件内容里搜
     - ``recursive=true`` → 一直往下翻，不设层数限制
     """
-    batch = as_text_list(paths, "paths", MAX_BATCH)
+    batch = as_text_list(paths, "paths", 0)
     if batch:
         return read_batch(batch, offset=offset, limit=limit, grep=grep, base_dir=base_dir)
 
@@ -137,13 +117,11 @@ def read(
     if dir:
         if not target.is_dir():
             raise RuntimeError(f"目录不存在：{dir}")
-        depth = _RECURSIVE_DEPTH if recursive else 1
         if kind == "suffix":
-            return list_entries(target, f"*{cleaned}", depth)
+            return list_entries(target, f"*{cleaned}", recursive)
         if kind in ("keyword", "regex"):
-            return grep_lines(target, cleaned, kind == "regex", 0, depth, "*",
-                              max(1, min(as_int(limit, "limit", MAX_GREP_HITS), MAX_GREP_HITS)), dir)
-        return list_entries(target, "*", depth)
+            return grep_lines(target, cleaned, kind == "regex", recursive, dir)
+        return list_entries(target, "*", recursive)
 
     # ---- 读文件 ----
     if not target.is_file():
@@ -151,8 +129,7 @@ def read(
     if is_image(target):
         return image_info(target)
     if kind in ("keyword", "regex"):
-        return grep_lines(target, cleaned, kind == "regex", 0, 1, "*",
-                          max(1, min(as_int(limit, "limit", MAX_GREP_HITS), MAX_GREP_HITS)), file)
+        return grep_lines(target, cleaned, kind == "regex", False, file)
     return format_lines(str(target), content_lines(target), offset, limit)
 
 
@@ -164,7 +141,7 @@ def read_batch(
     grep: str = "",
     base_dir=None,
 ) -> str:
-    """一次读多个文件：每段前带 ``===== 路径 =====``。"""
+    """一次读多个文件：每段前带 ``===== 路径 =====``（条数与总字数都不设限）。"""
     blocks: List[str] = []
     for item in items:
         try:
@@ -174,86 +151,65 @@ def read_batch(
         blocks.append(f"===== {item} =====\n{body}")
     return "\n\n".join(blocks)
 
-def grep_lines(
-    target: Path,
-    keyword: str,
-    regex: bool,
-    context: int,
-    depth: int,
-    pattern: str,
-    top: int,
-    shown: str,
-) -> str:
-    """按行检索：文件内检索，或目录下按 depth 递归检索（pattern 过滤文件名）。"""
+def grep_lines(target: Path, keyword: str, regex: bool, recursive: bool, shown: str) -> str:
+    """按行检索：文件内检索，或目录下检索（``recursive`` 时一直往下翻，不设层数）。"""
     matcher = compile(keyword, regex)
     if target.is_file():
         lines = content_lines(target)
-        hits, matched = match_lines(lines, matcher, context)
+        hits, matched = match_lines(lines, matcher, 0)
         if not hits:
             return f"{target} 中未找到 {keyword}（共 {len(lines)} 行）"
         return "\n".join([f"{target} 命中 {matched} 处（共 {len(lines)} 行）", *hits])
 
     if not target.is_dir():
         raise RuntimeError(f"路径不存在：{shown}")
-    hits, matched, scanned, truncated = scan(target, matcher, context, pattern, depth, top)
+    hits, matched, scanned = scan(target, matcher, recursive)
     if not hits:
-        return f"{target} 下未找到 {keyword}（扫描 {scanned} 个文件，递归 {depth} 层）"
-    lines = [f"{target} 下命中 {matched} 处（扫描 {scanned} 个文件）", *hits]
-    if truncated:
-        lines.append("（命中过多已停止：缩小关键词、加 pattern 过滤或降低 depth）")
-    return "\n".join(lines)
+        return f"{target} 下未找到 {keyword}（扫描 {scanned} 个文件）"
+    return "\n".join([f"{target} 下命中 {matched} 处（扫描 {scanned} 个文件）", *hits])
 
 
-def scan(root: Path, matcher, context: int, pattern: str, depth: int, top: int) -> tuple[list[str], int, int, bool]:
-    """广度优先遍历目录并收集命中，返回 ``(输出行, 命中数, 扫描文件数, 是否被截断)``。
+def scan(root: Path, matcher, recursive: bool) -> tuple[list[str], int, int]:
+    """遍历目录收集命中，返回 ``(输出行, 命中数, 扫描文件数)``。
 
-    命中数与输出行分开统计：带 context 时输出行里混着上下文行，不能拿来当命中数。
+    命中数单独统计（输出行里可能混着"文件名匹配"这类行）。
+    不设命中上限、不设文件数上限：要全部就给全部，输出过大由工具层统一兜底（落盘给路径）。
     """
     hits: list[str] = []
     matched = 0
     scanned = 0
-    queue: list[tuple[Path, int]] = [(root, 1)]
+    queue: list[Path] = [root]
     while queue:
-        directory, level = queue.pop(0)
+        directory = queue.pop(0)
         try:
             entries = sorted(Path(directory).iterdir())
         except OSError:
             continue
         for entry in entries:
             if entry.is_dir():
-                if level < depth:
-                    queue.append((entry, level + 1))
-                continue
-            # pattern 只过滤文件名：不能用 glob(pattern) 取条目，否则子目录也被挡掉、递归失效
-            if not fnmatch(entry.name, pattern):
+                if recursive:
+                    queue.append(entry)
                 continue
             try:
                 shown = f"{entry.relative_to(root).as_posix()}"
             except ValueError:
                 shown = entry.name
-            # 文件名本身命中就算一条：`read(dir="detail", grep="task1_step")` 要能直接列出文件，
+            # 文件名本身命中就算一条：read(dir="detail", grep="task1_step") 要能直接列出文件，
             # 而不是去这些文件的内容里找这个字符串
             if matcher.search(entry.name):
                 hits.append(f"{shown}  （文件名匹配）")
                 matched += 1
-                if matched >= top:
-                    return hits, matched, scanned, True
             if not is_readable(entry):
                 continue
             scanned += 1
-            if scanned > MAX_GREP_FILES:
-                return hits, matched, scanned, True
             try:
                 lines = content_lines(entry)
             except Exception:  # noqa: BLE001 - 单个文件读不了就跳过
                 continue
-            rows, count = match_lines(lines, matcher, context, prefix=f"{shown}:")
+            rows, count = match_lines(lines, matcher, 0, prefix=f"{shown}:")
             hits.extend(rows)
             matched += count
-            if matched >= top:
-                return hits, matched, scanned, True
-    return hits, matched, scanned, False
-
+    return hits, matched, scanned
 
 def compile(keyword: str, regex: bool):
     """把关键词编译成匹配器：默认按子串、忽略大小写；regex=True 时按正则。"""
@@ -275,7 +231,7 @@ def match_lines(lines: list[str], matcher, context: int, prefix: str = "") -> tu
         return [], 0
     rows: list[str] = []
     shown_until = -1
-    for index in found[:MAX_GREP_HITS]:
+    for index in found:
         first = max(0, index - context)
         last = min(len(lines) - 1, index + context)
         for current in range(first, last + 1):
@@ -284,7 +240,7 @@ def match_lines(lines: list[str], matcher, context: int, prefix: str = "") -> tu
             marker = ":" if current == index else "-"
             rows.append(f"{prefix}{current + 1}{marker}{lines[current]}")
             shown_until = current
-    return rows, min(len(found), MAX_GREP_HITS)
+    return rows, len(found)
 
 
 def resolve(path: str, base_dir) -> Path:
@@ -295,34 +251,14 @@ def resolve(path: str, base_dir) -> Path:
     return Path(base_dir) / target
 
 
-def collect_files(directory: Path, pattern: str, depth: int) -> List[Path]:
-    """按 pattern 与 depth 收集文件（与 :func:`list_entries` 的遍历口径一致）。"""
-    found: List[Path] = []
-    queue: List[tuple] = [(directory, 1)]
-    while queue:
-        folder, level = queue.pop(0)
-        try:
-            entries = sorted(Path(folder).iterdir())
-        except OSError:
-            continue
-        for entry in entries:
-            if entry.is_dir():
-                if level < depth:
-                    queue.append((entry, level + 1))
-                continue
-            if fnmatch(entry.name, pattern) and is_readable(entry):
-                found.append(entry)
-    return found
-
-
-def list_entries(directory: Path, pattern: str, depth: int) -> str:
-    """列出一个目录下的条目；depth 大于 1 时递归展开子目录。
+def list_entries(directory: Path, pattern: str, recursive: bool = False) -> str:
+    """列出一个目录下的条目；``recursive=True`` 时一直展开到最深层（不设层数）。
 
     头部给出汇总（文件数、目录数、合计字节数）：清点目录不必再去跑 shell 统计。
     """
     rows: list[str] = []
     files = folders = size = 0
-    for level_lines, counts in walk(directory, pattern or "*", depth, prefix=""):
+    for level_lines, counts in walk(directory, pattern or "*", recursive, prefix=""):
         rows.extend(level_lines)
         files += counts[0]
         folders += counts[1]
@@ -333,8 +269,8 @@ def list_entries(directory: Path, pattern: str, depth: int) -> str:
     return "\n".join([head, *rows])
 
 
-def walk(directory: Path, pattern: str, depth: int, prefix: str):
-    """按层产出 ``(本层条目行, (文件数, 目录数, 合计字节))``；depth 层之后不再下钻。"""
+def walk(directory: Path, pattern: str, recursive: bool, prefix: str):
+    """按层产出 ``(本层条目行, (文件数, 目录数, 合计字节))``；``recursive`` 为真就一路下钻。"""
     try:
         entries = sorted(directory.iterdir())
     except OSError as error:
@@ -357,10 +293,10 @@ def walk(directory: Path, pattern: str, depth: int, prefix: str):
         files += 1
         size += stat.st_size
     yield lines, (files, len(children), size)
-    if depth <= 1:
+    if not recursive:
         return
     for child in children:
-        yield from walk(child, pattern, depth - 1, prefix=f"  {prefix}")
+        yield from walk(child, pattern, True, prefix=f"  {prefix}")
 
 
 def format_lines(path: str, lines: list[str], offset: Optional[int], limit: Optional[int]) -> str:
@@ -393,9 +329,3 @@ def as_int(value, name: str, fallback: int) -> int:
         raise RuntimeError(f"{name} 需要是整数（当前：{value!r}）") from None
 
 
-def as_depth(value) -> int:
-    """目录递归层数：缺省 1，夹在 1..MAX_DEPTH。"""
-    depth = as_int(value, "depth", 1)
-    if depth < 1:
-        raise RuntimeError(f"depth 需要是正整数（当前：{value!r}）")
-    return min(depth, MAX_DEPTH)
