@@ -22,7 +22,6 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime
-from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any, List, Optional
 
@@ -39,78 +38,87 @@ information = {
         "type": "object",
         "properties": {
             "path": {"type": ["string", "array"], "items": {"type": "string"},
-                     "description": "要看的路径：一个字符串，或一组路径的数组（文件与目录可混放）。"
-                                    "文件→读内容；目录→列条目或搜内容。传数组时结果按 ===== 路径 ===== 分段"},
+                     "description": "要看的路径：一个字符串，或一组路径的数组。"
+                                    "文件→读内容；目录→列出其中的条目。传数组时结果按 ===== 路径 ===== 分段"},
             "grep": {"type": "string",
-                     "description": "筛选。默认按**字面量**搜（`C++`、`file(name)`、`a|b`、`/usr/bin/` 都照原样匹配）；"
-                                    "要用正则写成 `re:…`（如 `re:^def `），也认 `/…/` 但内部含斜杠时按字面量处理；"
-                                    "目标是目录时 `.md`/`*.txt` 这类当后缀，只列这类文件"},
-            "offset": {"type": "integer",
-                       "description": "起始行号（仅文件；不传从第 1 行开始）"},
-            "limit": {"type": "integer",
-                      "description": "最多返回行数（仅文件；不传就返回全部）"},
+                     "description": "从**本次输出**里筛出含它的行（不会去读你未指定的文件）。"
+                                    "默认按字面量匹配，`C++`、`file(name)`、`/usr/bin/` 都照原样找"},
+            "regex": {"type": "boolean",
+                      "description": "grep 是否按正则匹配（默认 false 按字面量）"},
+            "offset": {"type": "integer", "description": "从第几行开始（默认 1）"},
+            "limit": {"type": "integer", "description": "最多返回多少行（不传就全部）"},
             "recursive": {"type": "boolean",
-                          "description": "目标为目录时是否一直往下翻（true = 不限层数）"},
+                          "description": "目标是目录时是否连子目录一起列（默认 false 只看当前层）"},
         },
         "required": [],
     },
 }
 
 
-def classify_grep(value: str, *, is_dir: bool = False) -> tuple[str, str]:
-    """把 ``grep`` 认成 ``suffix`` / ``regex`` / ``keyword`` 之一。
+def filter_lines(body: str, pattern: str, regex: bool,
+                 offset: Optional[int], limit: Optional[int], label: str) -> str:
+    """从 body 里筛出含 pattern 的行；行号保留原文位置，再按 offset/limit 分页。
 
-    **不靠"含哪些元字符"猜正则**——``C++``、``file(name)``、``a|b``、``[注意]`` 这些
-    用户想搜的都是字面量，猜成正则要么报错（``C++`` 是非法正则），要么搜出别的东西。
-
-    规则（按顺序）：
-    - ``re:…`` → 正则。**明确写法，推荐**，``re:/usr/bin/`` 这种搜路径没问题
-    - ``/…/`` → 正则，但**内部含 ``/`` 时不当正则**——``/usr/bin/`` 是路径不是正则，
-      这种歧义下让位给字面量（真要用正则加 ``re:`` 前缀）
-    - **探查目录时** ``.md``、``*.txt`` 这类当后缀（只列这类文件）
-    - 其余一律当字面量（匹配时 ``re.escape``，含元字符也照原样找）
+    ``grep`` 只作用于**已经拿到的文本**——不会因为给了关键词就去读别的文件。
     """
-    raw = value or ""
-    text = raw.strip()
-    if not text:
-        return "none", ""
-    if text[:3].lower() == "re:":
-        # 从**原文**截取，只去掉前导空白：正则里的尾随空格是有意义的
-        # （`re:^def ` 要匹配 "def " 后面那个空格，被 strip 掉就变成匹配 "def"）
-        lead = len(raw) - len(raw.lstrip())
-        return "regex", raw[lead + 3:].lstrip()
-    if (len(text) > 2 and text.startswith("/") and text.endswith("/")
-            and "/" not in text[1:-1]):
-        return "regex", text[1:-1]
-    if is_dir:
-        plain = text.lstrip("*")
-        if re.fullmatch(r"\.[A-Za-z0-9]{1,8}", plain):
-            return "suffix", plain.lower()
-    return "keyword", text
+    matcher = compile(pattern, regex)
+    lines = body.splitlines()
+    found = [(index, line) for index, line in enumerate(lines, 1) if matcher.search(line)]
+    if not found:
+        return f"{label} 未找到 {pattern!r}（共 {len(lines)} 行）"
+    selected, more = page(found, offset, limit)
+    head = f"{label} 命中 {len(found)} 处（共 {len(lines)} 行）"
+    rows = [f"{number}:{line}" for number, line in selected]
+    if more:
+        rows.append(more)
+    return "\n".join([head, *rows])
+
+
+def page(items: list, offset: Optional[int], limit: Optional[int]) -> tuple[list, str]:
+    """按 offset/limit 切片，返回 ``(选中项, 续读提示或空串)``。"""
+    start = as_int(offset, "offset", 1)
+    if start < 1:
+        raise RuntimeError(f"offset 需要是正整数（当前：{offset!r}）")
+    begin = start - 1
+    count = as_int(limit, "limit", 0)
+    if limit is not None and count <= 0:
+        raise RuntimeError(f"limit 需要是正整数（当前：{limit!r}）")
+    if not items:
+        return [], ""
+    if begin >= len(items):
+        raise RuntimeError(f"起始行号超出范围：offset={start}，共 {len(items)} 行")
+    end = begin + count if count else len(items)
+    selected = items[begin:end]
+    if end < len(items):
+        return selected, f"（已截断：返回第 {begin + 1}-{end} 行，共 {len(items)} 行；继续读取请用 offset={end + 1}）"
+    return selected, ""
 
 
 def read(
     path: Any = None,
     grep: str = "",
+    regex: bool = False,
     offset: Optional[int] = None,
     limit: Optional[int] = None,
     recursive: bool = False,
     base_dir=None,
 ) -> str:
-    """看一个或多个目标：**文件读内容，目录列条目或搜内容**。
+    """看文件内容，或探查目录里有什么。
 
-    ``path`` 接一个路径或一组路径（``"a.md"`` 或 ``["src", "说明.md"]``）——
-    目标类型也由路径自己决定，不用另选参数。
+    ``grep`` 只从**本次输出**里筛行，不会去读你没指定的文件——想搜一批文件的内容，
+    把它们的路径放进 ``path`` 数组一次读，再让 grep 筛。
     """
     targets = as_text_list(path, "path", 0)
     if not targets:
         raise RuntimeError("read 需要 path：一个路径，或一组路径的数组")
     if len(targets) == 1:
         return read_one(
-            targets[0], grep=grep, offset=offset, limit=limit, recursive=recursive, base_dir=base_dir
+            targets[0], grep=grep, regex=regex, offset=offset, limit=limit,
+            recursive=recursive, base_dir=base_dir,
         )
     return read_batch(
-        targets, offset=offset, limit=limit, grep=grep, recursive=recursive, base_dir=base_dir
+        targets, grep=grep, regex=regex, offset=offset, limit=limit,
+        recursive=recursive, base_dir=base_dir,
     )
 
 
@@ -118,52 +126,52 @@ def read_one(
     target_text: str,
     *,
     grep: str = "",
+    regex: bool = False,
     offset: Optional[int] = None,
     limit: Optional[int] = None,
     recursive: bool = False,
     base_dir=None,
 ) -> str:
-    """看单个目标：是目录就列/搜，是文件就读/搜。
-
-    目录与文件对 ``grep`` 的解释不同：目录下 ``.md`` 是后缀（只列这类文件），
-    文件里 ``.md`` 只是要找的字面量——所以 ``classify_grep`` 要传 ``is_dir``。
-    """
+    """拿这个目标的文本：目录→条目清单，文件→内容；再筛行、再分页。"""
     target = resolve(target_text, base_dir)
-
     if target.is_dir():
-        kind, cleaned = classify_grep(grep, is_dir=True)
-        if kind == "suffix":
-            return list_entries(target, f"*{cleaned}", recursive)
-        if kind in ("keyword", "regex"):
-            return grep_lines(target, cleaned, kind == "regex", recursive, target_text)
-        return list_entries(target, "*", recursive)
-
-    if not target.is_file():
+        body = list_entries(target, recursive)
+    elif target.is_file():
+        if is_image(target):
+            return image_info(target)
+        body = "\n".join(content_lines(target))
+    else:
         raise RuntimeError(f"路径不存在：{target_text}")
-    if is_image(target):
-        return image_info(target)
-    kind, cleaned = classify_grep(grep)
-    if kind in ("keyword", "regex"):
-        return grep_lines(target, cleaned, kind == "regex", False, target_text)
-    return format_lines(str(target), content_lines(target), offset, limit)
+
+    if grep:
+        return filter_lines(body, grep, regex, offset, limit, target_text)
+
+    lines = body.splitlines()
+    selected, more = page(list(enumerate(lines, 1)), offset, limit)
+    rows = [f"{number}:{line}" for number, line in selected]
+    if more:
+        rows.append(more)
+    return "\n".join(rows) if rows else "（空）"
 
 
 def read_batch(
     items: List[str],
     *,
+    grep: str = "",
+    regex: bool = False,
     offset: Optional[int] = None,
     limit: Optional[int] = None,
-    grep: str = "",
     recursive: bool = False,
     base_dir=None,
 ) -> str:
     """一次看多个目标：并发跑，每段前带 ``===== 路径 =====``（条数与总字数都不设限）。
 
-    ``items`` 里文件和目录可以混放——各自按类型处理，所以多目录探查一次调用就够。
+    文件和目录可以混放——各自按类型处理。grep 对每一段各筛一次。
     """
     results = run_parallel_safe(
         lambda item: read_one(
-            item, grep=grep, offset=offset, limit=limit, recursive=recursive, base_dir=base_dir
+            item, grep=grep, regex=regex, offset=offset, limit=limit,
+            recursive=recursive, base_dir=base_dir,
         ),
         items,
         workers=READ_WORKERS,
@@ -174,65 +182,6 @@ def read_batch(
         blocks.append(f"===== {item} =====\n{body if error is None else f'错误：{error}'}")
     return "\n\n".join(blocks)
 
-def grep_lines(target: Path, keyword: str, regex: bool, recursive: bool, shown: str) -> str:
-    """按行检索：文件内检索，或目录下检索（``recursive`` 时一直往下翻，不设层数）。"""
-    matcher = compile(keyword, regex)
-    if target.is_file():
-        lines = content_lines(target)
-        hits, matched = match_lines(lines, matcher, 0)
-        if not hits:
-            return f"{target} 中未找到 {keyword}（共 {len(lines)} 行）"
-        return "\n".join([f"{target} 命中 {matched} 处（共 {len(lines)} 行）", *hits])
-
-    if not target.is_dir():
-        raise RuntimeError(f"路径不存在：{shown}")
-    hits, matched, scanned = scan(target, matcher, recursive)
-    if not hits:
-        return f"{target} 下未找到 {keyword}（扫描 {scanned} 个文件）"
-    return "\n".join([f"{target} 下命中 {matched} 处（扫描 {scanned} 个文件）", *hits])
-
-
-def scan(root: Path, matcher, recursive: bool) -> tuple[list[str], int, int]:
-    """遍历目录收集命中，返回 ``(输出行, 命中数, 扫描文件数)``。
-
-    命中数单独统计（输出行里可能混着"文件名匹配"这类行）。
-    不设命中上限、不设文件数上限：要全部就给全部，输出过大由工具层统一兜底（落盘给路径）。
-    """
-    hits: list[str] = []
-    matched = 0
-    scanned = 0
-    queue: list[Path] = [root]
-    while queue:
-        directory = queue.pop(0)
-        try:
-            entries = sorted(Path(directory).iterdir())
-        except OSError:
-            continue
-        for entry in entries:
-            if entry.is_dir():
-                if recursive:
-                    queue.append(entry)
-                continue
-            try:
-                shown = f"{entry.relative_to(root).as_posix()}"
-            except ValueError:
-                shown = entry.name
-            # 文件名本身命中就算一条：read(path="detail", grep="task1_step") 要能直接列出文件，
-            # 而不是去这些文件的内容里找这个字符串
-            if matcher.search(entry.name):
-                hits.append(f"{shown}  （文件名匹配）")
-                matched += 1
-            if not is_readable(entry):
-                continue
-            scanned += 1
-            try:
-                lines = content_lines(entry)
-            except Exception:  # noqa: BLE001 - 单个文件读不了就跳过
-                continue
-            rows, count = match_lines(lines, matcher, 0, prefix=f"{shown}:")
-            hits.extend(rows)
-            matched += count
-    return hits, matched, scanned
 
 def compile(keyword: str, regex: bool):
     """把关键词编译成匹配器：默认按子串、忽略大小写；regex=True 时按正则。"""
@@ -241,32 +190,10 @@ def compile(keyword: str, regex: bool):
             return re.compile(keyword, re.IGNORECASE)
         except re.error as error:
             raise RuntimeError(
-                f"正则无法编译：{keyword}（{error}）。"
-                "改成合法正则（如 C\\+\\+），或去掉两头的 / 按关键词字面量搜"
+                f"正则无法编译：{keyword}（{error}）。改成合法正则（如 C\\+\\+），"
+                "或把 regex 设为 false 按字面量搜"
             ) from None
     return re.compile(re.escape(keyword), re.IGNORECASE)
-
-
-def match_lines(lines: list[str], matcher, context: int, prefix: str = "") -> tuple[list[str], int]:
-    """返回 ``(输出行, 命中数)``：命中行用 ``行号:``，上下文行用 ``行号-``。
-
-    统计只算命中行，上下文行不计入——否则命中 1 处会变成命中 3 处。
-    """
-    found: list[int] = [index for index, line in enumerate(lines) if matcher.search(line)]
-    if not found:
-        return [], 0
-    rows: list[str] = []
-    shown_until = -1
-    for index in found:
-        first = max(0, index - context)
-        last = min(len(lines) - 1, index + context)
-        for current in range(first, last + 1):
-            if current <= shown_until:
-                continue
-            marker = ":" if current == index else "-"
-            rows.append(f"{prefix}{current + 1}{marker}{lines[current]}")
-            shown_until = current
-    return rows, len(found)
 
 
 def resolve(path: str, base_dir) -> Path:
@@ -277,14 +204,14 @@ def resolve(path: str, base_dir) -> Path:
     return Path(base_dir) / target
 
 
-def list_entries(directory: Path, pattern: str, recursive: bool = False) -> str:
-    """列出一个目录下的条目；``recursive=True`` 时一直展开到最深层（不设层数）。
+def list_entries(directory: Path, recursive: bool = False) -> str:
+    """列出目录里的条目；``recursive=True`` 时连子目录一起展开（**只列名字，不读文件内容**）。
 
     头部给出汇总（文件数、目录数、合计字节数）：清点目录不必再去跑 shell 统计。
     """
     rows: list[str] = []
     files = folders = size = 0
-    for level_lines, counts in walk(directory, pattern or "*", recursive, prefix=""):
+    for level_lines, counts in walk(directory, recursive, prefix=""):
         rows.extend(level_lines)
         files += counts[0]
         folders += counts[1]
@@ -295,7 +222,7 @@ def list_entries(directory: Path, pattern: str, recursive: bool = False) -> str:
     return "\n".join([head, *rows])
 
 
-def walk(directory: Path, pattern: str, recursive: bool, prefix: str):
+def walk(directory: Path, recursive: bool, prefix: str):
     """按层产出 ``(本层条目行, (文件数, 目录数, 合计字节))``；``recursive`` 为真就一路下钻。"""
     try:
         entries = sorted(directory.iterdir())
@@ -310,9 +237,6 @@ def walk(directory: Path, pattern: str, recursive: bool, prefix: str):
             lines.append(f"{prefix}- {entry.name}/  目录")
             children.append(entry)
             continue
-        # pattern 只过滤文件名：子目录一律入列，否则 depth 递归就没得走了
-        if not fnmatch(entry.name, pattern):
-            continue
         stat = entry.stat()
         stamp = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M")
         lines.append(f"{prefix}- {entry.name}  文件  {stat.st_size} 字节  {stamp}")
@@ -322,27 +246,7 @@ def walk(directory: Path, pattern: str, recursive: bool, prefix: str):
     if not recursive:
         return
     for child in children:
-        yield from walk(child, pattern, True, prefix=f"  {prefix}")
-
-
-def format_lines(path: str, lines: list[str], offset: Optional[int], limit: Optional[int]) -> str:
-    """按行号输出内容，未读完时给出续读提示。"""
-    total = len(lines)
-    start_at = as_int(offset, "offset", 1)
-    if start_at < 1:
-        raise RuntimeError(f"offset 需要是正整数（当前：{offset!r}）")
-    start = start_at - 1
-    if total and start >= total:
-        raise RuntimeError(f"起始行号超出文件范围：offset={start_at}，共 {total} 行（{path}）")
-    count = as_int(limit, "limit", 0)
-    if limit is not None and count <= 0:
-        raise RuntimeError(f"limit 需要是正整数（当前：{limit!r}）")
-    selected = lines[start : start + count] if count else lines[start:]
-    body = "\n".join(f"{start + index + 1}:{line}" for index, line in enumerate(selected))
-    end = start + len(selected)
-    if end < total:
-        return body + f"\n（已截断：返回第 {start + 1}-{end} 行，共 {total} 行；继续读取请用 offset={end + 1}）"
-    return body
+        yield from walk(child, True, prefix=f"  {prefix}")
 
 
 def as_int(value, name: str, fallback: int) -> int:
