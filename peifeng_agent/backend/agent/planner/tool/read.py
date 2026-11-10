@@ -50,129 +50,108 @@ _JSON_TOKEN = re.compile(r"([^.\[\]]+)|\[(-?\d+|\*)\]")
 information = {
     "name": "read",
     "description": (
-        "看文件内容与目录：①文件 → 带行号全文（.docx/.xlsx/.pptx 自动解析，可 offset/limit 分段）；"
-        "②目录 → 条目清单（pattern 过滤文件名、depth 递归层数）；"
-        "③.json 加 json_path → 按键/下标取值，支持 * 通配与 | 多路径"
-        "（如 json_path=\"tasks.*.requirement|tasks.*.status\" 一次取两列）；"
-        "④grep → 按行检索关键词或正则，path 是目录时按 depth 跨目录递归，context 给上下文行；"
-        "⑤**detail.json / summary.json 是会话记录，不允许全量读**：读到的内容会作为工具结果写回它自己，"
-        "文件越读越大、永远读不完。要查历史就用 json_path 指定字段，"
-        "如 json_path=\"tasks.1.steps[0].attempts[-1].result.content\"；"
-        "通常也不用查它——本步产出、交接说明、证据位置前面都已经给了。"
-        "要多看几个文件时用 paths 一次传完（个数不限），不要一个文件一次调用。"
-        "要看一整个目录里所有文件的内容，就用 path + pattern + with_content=true 一次拿完。"
-        "用于：确认目录结构、读文件内容、定位关键词、从 JSON 取字段时。"
-        "图片文件返回格式、像素尺寸与字节数。相对路径以 <项目目录> 为基准"
+        "读文件或列出目录，一个 grep 统一筛选。\n"
+        "① 文件：不给 grep → 全文（可 offset/limit 分段）；给关键词或正则 → 只回命中的行；"
+        "给 json_path → 按路径取字段（tasks.1.status，支持 * 与 |）。\n"
+        "② 目录：不给 grep → 列出条目；给后缀（.md）→ 只列这类文件；"
+        "给关键词或正则 → 在文件内容里搜（recursive 时跨子目录）。\n"
+        "③ grep 三种写法自动识别：.md 这类是后缀，/正则/ 或含 [ ] ( ) | ^ $ * + ? \\ 是正则，其余是关键词。\n"
+        "④ recursive=true 表示**一直往下翻**，不设层数限制。\n"
+        "⑤ detail.json / summary.json 是会话记录，**不能整份读**（读到的内容会写回它自己，越读越大），"
+        "要用 json_path 指定字段。\n"
+        "要紧看几个文件就用 paths 一次传完（个数不限），不要一个文件一次调用。"
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "文件或目录路径（相对或绝对）"},
-            "offset": {"type": "integer", "description": "起始行号（1 起；**不传就从第 1 行开始**，仅文件文本）"},
-            "limit": {"type": "integer", "description": "最多返回行数（**不传就返回全部，通常不用传**；仅文件文本）"},
-            "pattern": {"type": "string", "description": "文件名通配过滤（目录列举与目录检索时生效），如 *.docx"},
-            "depth": {"type": "integer", "description": f"目录递归层数（默认 1 只看当前层，最多 {MAX_DEPTH}）"},
-            "json_path": {
-                "type": "string",
-                "description": "JSON 子路径（仅 .json）：点号加下标；* 表示所有键或项（tasks.*.requirement）；"
-                "可用 | 一次取多条（tasks.*.a|tasks.*.b）",
-            },
-            "grep": {
-                "type": "string",
-                "description": "按行检索的关键词（regex=true 时为正则）：返回命中行号与内容",
-            },
-            "regex": {"type": "boolean", "description": "grep 按正则表达式匹配"},
-            "context": {
-                "type": "integer",
-                "description": f"grep 命中行的前后各几行上下文（默认 0，最多 {MAX_CONTEXT}）",
-            },
-            "top": {"type": "integer", "description": "grep 最多返回多少条命中（默认 50）"},
-            "paths": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": (
-                    "一次读多个路径（与 path 二选一）：每段结果前带 ===== 路径 =====。"
-                    "确实要看多个文件时请一次传进来，不要一个文件一轮"
-                ),
-            },
-            "with_content": {
-                "type": "boolean",
-                "description": (
-                    "path 是目录时，除列出条目外把匹配 pattern 的文件内容也一并返回"
-                    "（配合 depth 递归）。要看整个目录的文件内容就用它，一次拿完，别逐个读"
-                ),
-            },
+            "paths": {"type": "array", "items": {"type": "string"},
+                      "description": "一次读多个路径（与 path 二选一），每段结果前带 ===== 路径 ====="},
+            "grep": {"type": "string",
+                     "description": "筛选条件：关键词 / 后缀(.md) / 正则(/xxx/) 自动识别；不给就是全部"},
+            "offset": {"type": "integer", "description": "起始行号（1 起；不传就从第 1 行开始）"},
+            "limit": {"type": "integer", "description": "最多返回行数（不传就返回全部）"},
+            "recursive": {"type": "boolean", "description": "目录是否递归到底（true = 不限层数）"},
+            "json_path": {"type": "string",
+                          "description": "从 JSON 按键/下标取值，如 tasks.1.steps[0].goal，支持 * 与 |"},
         },
         "required": [],
     },
 }
 
 
+#: 目录递归时的层数上限：给个很大的值表示"一直往下翻"（不暴露给模型）
+_RECURSIVE_DEPTH = 64
+
+
+def classify_grep(value: str) -> tuple[str, str]:
+    """把 ``grep`` 认成三种之一：``suffix``（后缀）/ ``regex``（正则）/ ``keyword``（关键词）。
+
+    用户一次只想表达"筛什么"，不该为"这是不是正则"再学一个参数：
+    - ``.md``、``*.txt`` 这种 → 按文件名后缀筛
+    - 用 ``/`` 包起来，或含正则元字符 → 按正则匹配内容
+    - 其余 → 当普通关键词
+    """
+    text = (value or "").strip()
+    if not text:
+        return "none", ""
+    plain = text.lstrip("*")
+    if re.fullmatch(r"\.[A-Za-z0-9]{1,8}", plain):
+        return "suffix", plain.lower()
+    if len(text) > 2 and text.startswith("/") and text.endswith("/"):
+        return "regex", text[1:-1]
+    if any(ch in text for ch in ("\\", "[", "]", "(", ")", "|", "^", "$", "+", "?")):
+        return "regex", text
+    return "keyword", text
+
+
 def read(
     path: str = "",
+    paths: Optional[List[str]] = None,
+    grep: str = "",
     offset: Optional[int] = None,
     limit: Optional[int] = None,
-    pattern: str = "",
-    depth: Optional[int] = None,
+    recursive: bool = False,
     json_path: str = "",
-    grep: str = "",
-    regex: bool = False,
-    context: Optional[int] = None,
-    top: Optional[int] = None,
-    paths: Optional[List[str]] = None,
-    with_content: bool = False,
     base_dir=None,
 ) -> str:
-    """读取文件内容、JSON 子路径、目录条目，或按关键词检索；相对路径以 base_dir 为基准。
+    """读文件内容、列出目录、按条件筛选，或从 JSON 取字段。
 
-    不设人为截断：文档读全文、目录列全部条目、JSON 片段完整给出——读不全会让模型反复换工具重试。
+    两种目标，一套参数：
 
-    ``paths`` 一次读多个（每段带 ``===== 路径 =====`` 分隔）：把"一次看几个文件"压成一次调用，
-    模型一轮只发一个调用时，轮次就是这么省下来的。
+    - **文件**：``grep`` 给关键词/正则 → 只回命中的行；不给 → 全文（可 ``offset``/``limit`` 分段）。
+      ``json_path`` 给了就按路径取值（``tasks.1.status``，支持 ``*`` 与 ``|``）。
+    - **目录**：``grep`` 给后缀（``.md``）→ 只列这类文件；给关键词/正则 → 在文件内容里搜。
+      ``recursive`` 打开时**一直往下翻**（不限层数），否则只看当前层。
+
+    多个目标用 ``paths`` 一次传完（个数不限）；相对路径以 base_dir（项目目录）为基准。
     """
     batch = as_text_list(paths, "paths", MAX_BATCH)
     if batch:
         return read_batch(
-            batch,
-            offset=offset,
-            limit=limit,
-            pattern=pattern,
-            depth=depth,
-            json_path=json_path,
-            grep=grep,
-            regex=regex,
-            context=context,
-            top=top,
-            base_dir=base_dir,
+            batch, offset=offset, limit=limit, json_path=json_path,
+            grep=grep, base_dir=base_dir,
         )
     if not str(path or "").strip():
-        raise RuntimeError("read 需要 path（单个路径）或 paths（多个路径）之一")
+        raise RuntimeError("read 需要 path（单个）或 paths（多个）之一")
+
     target = resolve(path, base_dir)
-    keyword = str(grep or "").strip()
-    if keyword:
-        keep = as_int(context, "context", 0)
-        if keep < 0 or keep > MAX_CONTEXT:
-            raise RuntimeError(f"context 需要在 0..{MAX_CONTEXT} 之间（当前：{context!r}）")
-        return grep_lines(
-            target,
-            keyword,
-            bool(regex),
-            keep,
-            as_depth(depth),
-            pattern or "*",
-            max(1, min(as_int(top, "top", 50), MAX_GREP_HITS)),
-            str(path or ""),
-        )
+    kind, keyword = classify_grep(grep)
+    depth = _RECURSIVE_DEPTH if recursive else 1
+
     if target.is_dir():
-        listing = list_entries(target, pattern, as_depth(depth))
-        if not with_content:
-            return listing
-        # 目录 + with_content：一次把匹配文件的内容也拿走（省掉"列目录 → 逐个读"的 N 轮）
-        found = collect_files(target, pattern or "*", as_depth(depth))
-        if not found:
-            return listing
-        body = read_batch([str(item) for item in found], offset=offset, limit=limit, base_dir=None)
-        return f"{listing}\n\n{body}"
+        if kind == "suffix":
+            # 后缀筛选：列文件（递归与否由 recursive 决定）
+            return list_entries(target, f"*{keyword}", depth)
+        if kind in ("keyword", "regex"):
+            # 内容检索：跨文件搜，命中行带文件名
+            return grep_lines(
+                target, keyword, kind == "regex", 0, depth, "*",
+                max(1, min(as_int(limit, "limit", MAX_GREP_HITS), MAX_GREP_HITS)),
+                str(path),
+            )
+        return list_entries(target, "*", depth)
+
     if not target.is_file():
         raise RuntimeError(f"路径不存在：{path}")
     if is_image(target):
@@ -180,69 +159,39 @@ def read(
     trace = str(json_path or "").strip()
     if trace:
         return read_json_path(target, trace)
-    # 会话记录（detail.json / summary.json）禁止全量读：读出来的内容本身会被写回这两个文件，
-    # 文件越读越大、永远读不完。必须用 json_path 取具体字段。
+    if kind in ("keyword", "regex"):
+        return grep_lines(target, keyword, kind == "regex", 0, 1, "*",
+                          max(1, min(as_int(limit, "limit", MAX_GREP_HITS), MAX_GREP_HITS)),
+                          str(path))
+    # 会话记录禁止整份读：读到的内容会被写回它自己，越读越大
     if target.name.lower() in PROTECTED_JSON:
         raise RuntimeError(
             f"{target.name} 是全量会话记录，**不能整份读**——读到的内容会被写回它自己，"
             "文件越读越大、永远读不完。请用 json_path 只取需要的字段，例如：\n"
             "  read(path=\"...detail.json\", json_path=\"tasks.1.steps[0].attempts[-1].result.content\")\n"
-            "  read(path=\"...detail.json\", json_path=\"tasks.*.status\")   # 支持 * 通配与 | 多路径\n"
-            "通常你并不需要它：本步产出、交接说明、关键证据位置都在前面给了。"
+            "  read(path=\"...detail.json\", json_path=\"tasks.*.status\")"
         )
     return format_lines(str(target), content_lines(target), offset, limit)
-
 
 def read_batch(
     items: List[str],
     *,
     offset: Optional[int] = None,
     limit: Optional[int] = None,
-    pattern: str = "",
-    depth: Optional[int] = None,
     json_path: str = "",
     grep: str = "",
-    regex: bool = False,
-    context: Optional[int] = None,
-    top: Optional[int] = None,
     base_dir=None,
 ) -> str:
-    """批量读：逐个走单路径逻辑，按 ``===== 路径 =====`` 分段；单个失败不影响其它。
-
-    串行执行：本地 IO 很快，而"一次调用拿回多份结果"本身就省掉了模型往返，
-    再为几个毫秒去并发没有意义。
-    """
+    """一次读多个路径：每段前带 ``===== 路径 =====``，名称与参数完全一致才合并。"""
     blocks: List[str] = []
-    total = 0
-    for index, item in enumerate(items):
+    for item in items:
         try:
-            body = read(
-                item,
-                offset=offset,
-                limit=limit,
-                pattern=pattern,
-                depth=depth,
-                json_path=json_path,
-                grep=grep,
-                regex=regex,
-                context=context,
-                top=top,
-                base_dir=base_dir,
-            )
-        except Exception as error:  # noqa: BLE001 - 单个路径失败不该拖垮整批
-            body = f"读取失败：{error}"
-        total += len(body)
-        if total > MAX_BATCH_CHARS:
-            # 批量容易"一次把上下文灌满"：到这里停下并说清还剩哪些没读
-            rest = len(items) - index
-            blocks.append(
-                f"（本批已读 {total} 字，达 {MAX_BATCH_CHARS} 字上限："
-                f"剩余 {rest} 个文件未读，请缩小范围、用 offset/limit 分段，或分批再读）"
-            )
-            break
+            body = read(item, offset=offset, limit=limit, json_path=json_path,
+                        grep=grep, base_dir=base_dir)
+        except RuntimeError as error:
+            body = f"错误：{error}"
         blocks.append(f"===== {item} =====\n{body}")
     return "\n\n".join(blocks)
-
 
 def grep_lines(
     target: Path,
