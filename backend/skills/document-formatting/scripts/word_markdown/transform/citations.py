@@ -1,0 +1,697 @@
+"""word_markdown.transform.citations — 文献引用的编译（CSL）。
+
+用 citeproc-py（2 MB，只依赖 lxml）做 CSL 渲染。实测：把我们自己的 .bib 转成
+CSL-JSON 之后，两套内置样式（nature、GB/T 7714）都能正常渲染；citeproc-py 自带的 BibTeX 读取器反而不产出 `issued`，直接用会抛
+VariableError——所以转换这一步由我们做（见 transform/bibtex.py）。
+
+已知限制：citeproc-py 不支持 `suppress-author`，叙述式引用（`@key` 作句子主语）无法按
+CSL 的 author-in-text 形式渲染。这里对作者-年份制做一次保守改写把年份移进括号；
+数字制下与括号式相同。这条限制写在文档里，不藏着。
+"""
+from __future__ import annotations
+import dataclasses
+import re
+from pathlib import Path
+from typing import Iterable, Sequence
+from citeproc import Citation, CitationItem, CitationStylesBibliography, CitationStylesStyle, formatter
+from citeproc.source import Locator
+from citeproc.source.json import CiteProcJSON
+from word_markdown.transform.bibtex import parse_bibtex
+from word_markdown.transform.disambiguation import BASE, StyleCloner, Variant, citation_attrs, initials
+from word_markdown.i18n import t
+
+class CitationError(RuntimeError):
+    """文献库或 CSL 样式无法使用。"""
+
+class CitationEngine:
+    """一份文献库 + 一个 CSL 样式 = 一个渲染器。"""
+
+    def __init__(self, bib_text: str, csl_path: Path | str, lang: str='zh') -> None:
+        self.lang = lang
+        self.entries = parse_bibtex(bib_text)
+        if not self.entries:
+            raise CitationError(t('citations.empty_library', lang))
+        try:
+            style = CitationStylesStyle(str(csl_path), validate=False)
+        except Exception as exc:
+            raise CitationError(t('citations.style_unparsable', lang, path=csl_path, err=exc)) from exc
+        self._style = style
+        self._bibliography = CitationStylesBibliography(style, CiteProcJSON(self.entries), formatter.html)
+        self._known = {entry['id'] for entry in self.entries}
+        self._rendered: dict[tuple, str] = {}
+        self._order: list[str] = []
+        self._by_key = {entry['id']: entry for entry in self.entries}
+        style_text = Path(csl_path).read_text(encoding='utf-8')
+        self._number_prefix, self._number_suffix, has_citation_number = _number_affixes(style_text)
+        tag = re.search('<bibliography\\b[^>]*>', style_text)
+        self._first_field_column = has_citation_number or bool(tag and 'second-field-align' in tag.group(0))
+        self._sort_by_initials = _sort_names_initialized(style_text)
+        self._sort_order = _declared_sort_keys(style_text)
+        self._sorted = bool(self._sort_order)
+        options = citation_attrs(style_text)
+        self._year_suffix = options.get('disambiguate-add-year-suffix') == 'true'
+        self._add_names = options.get('disambiguate-add-names') == 'true'
+        mode = options.get('collapse', '')
+        self._collapse = mode in ('year', 'year-suffix', 'year-suffix-ranged')
+        self._collapse_ranged = mode in ('year-suffix', 'year-suffix-ranged')
+        self._numeric = options.get('collapse') == 'citation-number'
+        self._expand_pages = 'page-range-format="expanded"' in style_text
+        self._add_givenname = options.get('disambiguate-add-givenname') == 'true'
+        rule = options.get('givenname-disambiguation-rule', 'by-cite')
+        self._rule_names = rule != 'by-cite'
+        self._initials_all = rule.startswith('all-names')
+        self._initials_only = rule.endswith('with-initials')
+        self._cloner = StyleCloner(style_text, int(options.get('et-al-use-first', '1') or 1))
+        citation_block = _citation_block(style_text)
+        sort_block = re.search('<sort>(.*?)</sort>', citation_block, re.S)
+        sort_vars = re.findall('variable="([^"]+)"', sort_block.group(1)) if sort_block else []
+        self._citation_sort = (sort_vars[0] if sort_vars else 'author') if sort_block else None
+        layout = re.search('<layout\\b([^>]*)>', citation_block)
+        layout_attrs = dict(re.findall('([\\w-]+)="([^"]*)"', layout.group(1))) if layout else {}
+        self._layout = (layout_attrs.get('prefix', ''), layout_attrs.get('suffix', ''), layout_attrs.get('delimiter', '; '))
+        self._variants: dict[str, Variant] = {}
+        self._variant_cache: dict[tuple, str] = {}
+
+    def reserve(self, keys: Iterable[str]) -> None:
+        """过一遍消歧，必须在第一次 cite 之前调用。
+
+        CSL 的顺序是：补首字母 → 补名字 → 年份后缀。前两条落在引用的**名字形态**上
+        （样式副本），第三条落在**条目数据**上（`year-suffix`）。
+
+        首字母那条是名字级的，不是引用级的：同姓不同人即使年份不同也要补（APA 8.20），
+        所以按「第一作者姓」分组判定，而不是比较整条引用。
+        """
+        cited = [key for key in dict.fromkeys(keys) if key in self._known]
+        if not cited:
+            return
+        if self._add_givenname and self._rule_names:
+            for key, variant in self._name_variants(cited).items():
+                self._variants[key] = variant
+        if self._add_names:
+            for group in _groups({k: self._render_single(k, self._variant(k)) for k in cited}):
+                best = 0
+                for extra in range(1, _max_extra_names([self._by_key[k] for k in group]) + 1):
+                    candidate = Variant(extra_names=extra, initials=self._variant(group[0]).initials)
+                    shown = len({self._render_single(k, candidate) for k in group})
+                    if shown == len(group):
+                        best = extra
+                        break
+                if best:
+                    for key in group:
+                        base = self._variant(key)
+                        self._variants[key] = Variant(extra_names=best, initials=base.initials)
+        if self._year_suffix:
+            final = {key: self._render_single(key, self._variant(key)) for key in cited}
+            for group in _groups(final):
+                group = self._sorted_keys(group)
+                for index, key in enumerate(group):
+                    self._by_key[key]['year-suffix'] = _suffix_label(index)
+            self._bibliography = CitationStylesBibliography(self._style, CiteProcJSON(self.entries), formatter.html)
+            self._variant_cache.clear()
+
+    def _with_names(self, key: str, full: bool=False) -> list:
+        """这条引用的条目副本：按规则给首名（或全部名字）补首字母，或展开全名。"""
+        decorated = []
+        for entry in self.entries:
+            if entry['id'] != key:
+                decorated.append(entry)
+                continue
+            copy = dict(entry)
+            people = [dict(person) for person in entry.get('author') or []]
+            targets = people if self._initials_all else people[:1]
+            for person in targets:
+                given = person.get('given', '')
+                family = person.get('family')
+                if given and family:
+                    person['family'] = (given + ' ' if full else initials(given)) + family
+            copy['author'] = people
+            decorated.append(copy)
+        return decorated
+
+    def _variant(self, key: str) -> Variant:
+        return self._variants.get(key, BASE)
+
+    def _name_variants(self, cited: list[str]) -> dict[str, Variant]:
+        """第一作者同姓不同人的，补首字母；首字母也撞的（J. Smith 有两位），展开全名。"""
+        buckets: dict[str, list[str]] = {}
+        for key in cited:
+            people = self._by_key[key].get('author') or []
+            if people:
+                buckets.setdefault(people[0].get('family') or people[0].get('literal', ''), []).append(key)
+        out: dict[str, Variant] = {}
+        for group in buckets.values():
+            firsts = [(self._by_key[k].get('author') or [{}])[0] for k in group]
+            givens = {person.get('given', '') for person in firsts}
+            if len(givens) < 2:
+                continue
+            initials_seen = {initials(given).strip() for given in givens}
+            collide = len(initials_seen) < len(givens)
+            full = collide and (not self._initials_only)
+            variant = Variant(full_names=True) if full else Variant(initials=True)
+            for key in group:
+                out[key] = variant
+        return out
+
+    def _render_group(self, pairs) -> str:
+        """逐条渲染再按样式的布局合起来：这条路上消歧形态与 collapse 归我们自己管。
+
+        CSL 的 `collapse="year"`：同一括号里作者部分相同的几条，年份并到一处
+        （`(Kim & Park, 2019, 2020a)`）。citeproc-py 不实现 collapse，也不支持逐条换形态。
+        """
+        prefix, suffix, delimiter = self._layout
+        ordered = self._sort_pairs(pairs)
+        pieces = []
+        for pair in ordered:
+            locator = pair[1] if len(pair) > 1 else ''
+            item_prefix = pair[2] if len(pair) > 2 else ''
+            label = pair[3] if len(pair) > 3 else 'page'
+            text = self._render(pair[0], self._variant(pair[0]), locator, item_prefix, label)
+            if prefix and text.startswith(prefix):
+                text = text[len(prefix):]
+            if suffix and text.endswith(suffix):
+                text = text[:-len(suffix)]
+            pieces.append((pair[0], text))
+        if not self._collapse:
+            return f'{prefix}{delimiter.join((text for _key, text in pieces))}{suffix}'
+        groups: list[list] = []
+        for key, text in pieces:
+            names, date = self._split_author(key, text)
+            if names is None:
+                groups.append([None, [text]])
+            elif groups and groups[-1][0] == names:
+                groups[-1][1].append(date)
+            else:
+                groups.append([names, [date]])
+        body = delimiter.join((names + _join_dates(dates, self._collapse_ranged) if names else dates[0] for names, dates in groups))
+        return f'{prefix}{body}{suffix}'
+
+    def _sort_pairs(self, pairs) -> list:
+        """按样式声明的 `<sort>` 排；没声明就保持输入顺序（CSL 的规矩）。"""
+        if not self._citation_sort:
+            return list(pairs)
+        kind = 'year' if self._citation_sort in ('issued', 'date') else 'names'
+        return sorted(pairs, key=lambda pair: _sort_value(kind, self._by_key.get(pair[0], {}), self._sort_by_initials))
+
+    def _split_author(self, key: str, text: str):
+        """把一条渲染好的引用拆成「作者部分」与「年份部分」，供 collapse 归并。"""
+        year = str((self._by_key.get(key, {}).get('issued') or {}).get('date-parts', [[None]])[0][0])
+        if not year or year == 'None':
+            return (None, text)
+        suffix = str(self._by_key.get(key, {}).get('year-suffix', ''))
+        token = year + suffix
+        index = text.rfind(token)
+        if index <= 0:
+            return (None, text)
+        return (text[:index], text[index:])
+
+    def _render_single(self, key: str, variant: Variant=BASE) -> str:
+        """单独渲染一条引用（不带定位符），用于判断两条会不会撞。"""
+        cache_key = (key, variant)
+        if cache_key in self._variant_cache:
+            return self._variant_cache[cache_key]
+        html = self._render(key, variant, '', '')
+        self._variant_cache[cache_key] = html
+        return html
+
+    def _render(self, key: str, variant: Variant, locator: str='', prefix: str='', label: str='page') -> str:
+        """用指定的名字形态渲染一条引用，返回 html 标记串。
+
+        补首字母走**条目数据**（只改这条引用用的副本，文献表用的原条目不动）：CSL 没有
+        「只给第一个名字加首字母」的写法，`primary-name-with-initials` 只能这么做。
+        补名字走**样式副本**：显示几个名字是样式属性，条目数据改不了。
+        """
+        entries = self.entries
+        if variant.initials or variant.full_names:
+            entries = self._with_names(key, full=variant.full_names)
+        style = self._style
+        if variant.extra_names:
+            style = CitationStylesStyle(str(self._cloner.path(Variant(extra_names=variant.extra_names))), validate=False)
+        bibliography = CitationStylesBibliography(style, CiteProcJSON(entries), formatter.html)
+        args: dict = {}
+        if locator:
+            if label == 'page' and self._expand_pages:
+                locator = _expand_range(locator)
+            args['locator'] = Locator(label, locator)
+        if prefix:
+            args['prefix'] = prefix.strip() + ' '
+        citation = Citation([CitationItem(key, **args)])
+        bibliography.register(citation)
+        return _with_year_suffix(str(bibliography.cite(citation, lambda item: item)), self._by_key.get(key, {}))
+
+    def has(self, key: str) -> bool:
+        return key in self._known
+
+    def cite(self, keys: Sequence[tuple], narrative: bool=False) -> list[tuple[str, dict]]:
+        """`keys` 是 (key, locator[, prefix]) 序列；同一组只注册一次，避免重复计入编号。
+
+        locator 与 prefix 是作者写进引用的东西（页码、`见`），丢了就是丢内容，
+        所以一律带到渲染里；页码按 CSL 的 page 标签走（终稿里成 `, p. 33`）。
+
+        返回 (文本, 格式) 片段序列——上标/斜体这类格式由 CSL 决定，不能丢成纯文本。
+        """
+        pairs = tuple((tuple(pair) for pair in keys))
+        cache_key = (pairs, narrative)
+        if cache_key in self._rendered:
+            return self._rendered[cache_key]
+        for pair in pairs:
+            if pair[0] not in self._known:
+                raise CitationError(t('citations.key_missing', self.lang, key=pair[0]))
+        for pair in pairs:
+            if pair[0] not in self._order:
+                self._order.append(pair[0])
+        items = []
+        for pair in pairs:
+            args: dict = {}
+            locator = pair[1] if len(pair) > 1 else ''
+            prefix = pair[2] if len(pair) > 2 else ''
+            label = pair[3] if len(pair) > 3 else 'page'
+            if locator:
+                if label == 'page' and self._expand_pages:
+                    locator = _expand_range(locator)
+                args['locator'] = Locator(label, locator)
+            if prefix:
+                args['prefix'] = prefix.strip() + ' '
+            items.append(CitationItem(pair[0], **args))
+        citation = Citation(items)
+        self._bibliography.register(citation)
+        if self._collapse and len(pairs) > 1:
+            html = self._render_group(pairs)
+        elif any((not self._variant(pair[0]).plain for pair in pairs)):
+            html = self._render_group(pairs)
+        else:
+            html = str(self._bibliography.cite(citation, lambda item: item))
+        if narrative:
+            html = _as_narrative(html)
+        html = _merge_duplicate_period(_collapse_numeric_runs(html, bare=self._numeric))
+        segments = html_to_segments(html)
+        self._rendered[cache_key] = segments
+        return segments
+
+    def bibliography_entries(self):
+        """(key, 片段序列)——写出器要用 key 建书签、用片段还原斜体。"""
+        return self.bibliography_segments()
+
+    def _sorted_keys(self, keys) -> list[str]:
+        """按 `<sort>` 声明的键序与方向排。
+
+        多字段混搭（作者升序、年份降序）靠稳定排序从最后一条键往前做，一趟一条键；
+        把几条键塞进一个元组是做不到的——元组里没法让某一项逆序。
+        """
+        result = list(keys)
+        for kind, descending in reversed(self._sort_order):
+            result.sort(key=lambda key: _sort_value(kind, self._by_key.get(key, {}), self._sort_by_initials), reverse=descending)
+        return result
+
+    def _ordered_keys(self) -> list[str]:
+        return self._sorted_keys(self._order) if self._sorted else list(self._order)
+
+    def bibliography_segments(self) -> list[tuple[str, list[tuple[str, dict]]]]:
+        """(key, 片段序列)——写出器要用 key 建书签、用片段还原斜体。"""
+        texts = self.bibliography()
+        keys = self._ordered_keys()
+        if len(keys) != len(texts):
+            return [(f'item{i}', html_to_segments(t)) for i, t in enumerate(texts)]
+        return list(zip(keys, [html_to_segments(t) for t in texts]))
+
+    def bibliography(self) -> list[str]:
+        """文末文献列表（仍是 html 标记串；要片段用 bibliography_segments）。
+
+        顺序分两种：CSL 在 `<bibliography>` 里声明了 `<sort>` 的（作者-年份制）按声明的键序
+        与方向排；没声明的（数字顺序制，如 GB/T 7714、Nature）按首次引用顺序。
+
+        `citeproc-py` 有 `style.sort_bibliography()`，但实测不生效（apa.csl 依旧按注册顺序
+        返回），所以这里自己做：键序、升降序、名的形态都取自样式本身，见
+        `_declared_sort_keys` 与 `_sort_names_initialized`。
+        """
+        rendered = [_merge_duplicate_period(_with_year_suffix(self._separate_first_field(entry, number), self._by_key.get(key, {}))) for number, (key, entry) in enumerate(zip(self._order, self._bibliography.bibliography()), start=1)]
+        if not self._sorted or len(rendered) != len(self._order):
+            return rendered
+        text_by_key = dict(zip(self._order, rendered))
+        return [text_by_key[key] for key in self._sorted_keys(self._order)]
+
+    def _separate_first_field(self, entry, number: int) -> str:
+        """顺序数字制或 `second-field-align` 声明了「首个字段自成一栏」：在序号后面补一个制表符。
+
+        `citeproc-py` 从不落实这个属性，序号会直接贴住条目正文（例如 `[1]Smith`、`1.Smith`）。
+        而它的分片**不是**按字段切的（IEEE 给出的是 `'[1]J. Doe and J. Roe, '`，序号和作者在
+        同一个分片里），所以边界只能从 CSL 自己写的序号前后缀来：样式里那只 `citation-number`
+        长什么样，产物里序号就长什么样。
+
+        用制表符而非空格——`参考文献` 带悬挂缩进时，制表位正落在缩进处，首行文字与折行文字对齐成列。
+        """
+        text = ''.join((str(chunk) for chunk in entry))
+        marker = f'{self._number_prefix}{number}{self._number_suffix}'
+        if not self._first_field_column or not text.startswith(marker):
+            return text
+        marker_clean = marker.rstrip()
+        rest = text[len(marker):].lstrip()
+        return marker_clean + '\t' + rest
+
+def _number_affixes(style_text: str) -> tuple[str, str, bool]:
+    """`<bibliography>` 里 `citation-number` 的前后缀：序号那一栏实际印成什么样。
+
+    返回 (prefix, suffix, has_citation_number)。
+    """
+    block = re.search('<bibliography\\b.*?</bibliography>', style_text, re.DOTALL)
+    tag = block and re.search('<text\\b[^>]*variable="citation-number"[^>]*>', block.group(0))
+    if not tag:
+        return ('', '', False)
+
+    def attr(name: str) -> str:
+        found = re.search(f'{name}="([^"]*)"', tag.group(0))
+        return found.group(1) if found else ''
+    return (attr('prefix'), attr('suffix'), True)
+_NUMERIC_CITE_RE = re.compile('\\[(\\d+(?:\\s*[,\\-–]\\s*\\d+)+)\\]')
+_BARE_NUMERIC_RE = re.compile('(?<![\\d.])(\\d+(?:\\s*,\\s*\\d+){2,})(?![\\d.])')
+
+def _collapse_numeric_runs(html: str, bare: bool=False) -> str:
+    """数字制的连续编号合并成区间：`[4,5,6]` → `[4–6]`。
+
+    GB/T 7714、IEEE 这类用方括号，Nature、AMA 这类直接写上标数字；citeproc-py 两种都
+    一个个列出来。三条以上连续才合并，`[4,5]` 保持原样。
+    """
+
+    def merge(numbers: list[int]) -> str:
+        parts: list[str] = []
+        start = prev = numbers[0]
+        for n in numbers[1:] + [None]:
+            if n is not None and n == prev + 1:
+                prev = n
+                continue
+            parts.append(f'{start}–{prev}' if prev - start >= 2 else ','.join((str(x) for x in range(start, prev + 1))))
+            if n is not None:
+                start = prev = n
+        return ','.join(parts)
+
+    def inside_brackets(match: re.Match) -> str:
+        if re.search('[–\\-]', match.group(1)):
+            return match.group(0)
+        numbers = [int(n) for n in re.findall('\\d+', match.group(1))]
+        if numbers != sorted(numbers) or len(set(numbers)) != len(numbers):
+            return match.group(0)
+        return '[' + merge(numbers) + ']'
+
+    def listed_separately(match: re.Match) -> str:
+        """`[1], [2], [3]` 逐条列出的也并成 `[1]–[3]`。"""
+        numbers = [int(n) for n in re.findall('\\[(\\d+)\\]', match.group(0))]
+        if numbers != list(range(numbers[0], numbers[0] + len(numbers))):
+            return match.group(0)
+        return f'[{numbers[0]}]–[{numbers[-1]}]'
+    html = _NUMERIC_CITE_RE.sub(inside_brackets, html)
+    html = re.sub('\\[\\d+\\](?:\\s*,\\s*\\[\\d+\\]){2,}', listed_separately, html)
+    if bare:
+
+        def bare_run(match: re.Match) -> str:
+            numbers = [int(n) for n in re.findall('\\d+', match.group(0))]
+            if numbers != sorted(numbers) or len(set(numbers)) != len(numbers):
+                return match.group(0)
+            return merge(numbers)
+        html = _BARE_NUMERIC_RE.sub(bare_run, html)
+    return html
+_TERMINAL_PUNCT = '.!?:'
+_CLOSING_QUOTES = '”’"\''
+_SUFFIX_PERIOD_RE = re.compile('([.!?:][' + _CLOSING_QUOTES + ']*)\\.(?=\\s|$)')
+
+def _merge_duplicate_period(html: str) -> str:
+    """终止标点后面不再补句点：`Automated?.` → `Automated?`、`“Automated?”.` → `“Automated?”`。
+
+    citeproc-js 有一张合并表（`?` + `.` → `?`、`!` + `.` → `!`、`:` + `.` → `:`），
+    用来吃掉样式在标题后补的那个 `suffix="."`；citeproc-py 没有，标题以问号结尾时
+    文献表就写成 `Automated?.`。只看文本、跳过标签：APA 的书名是斜体，句点落在 `</i>` 后面。
+    """
+    parts: list[str] = []
+    tail = ''
+    pos = 0
+    for match in _TAG_RE.finditer(html or ''):
+        text, tail = _merge_text(html[pos:match.start()], tail)
+        parts.append(text)
+        parts.append(match.group(0))
+        pos = match.end()
+    text, tail = _merge_text((html or '')[pos:], tail)
+    parts.append(text)
+    return ''.join(parts)
+
+def _merge_text(text: str, tail: str) -> tuple[str, str]:
+    """(合并后的文本, 这段最后几个非空白字符)——跨标签时上一段的结果要传过来。"""
+    if not text:
+        return (text, tail)
+    while text.startswith('.') and _absorbs_period(tail):
+        text = text[1:]
+    text = _SUFFIX_PERIOD_RE.sub('\\1', text)
+    visible = text.rstrip()
+    return (text, (tail + visible)[-4:] if visible else tail)
+
+def _absorbs_period(tail: str) -> bool:
+    """句点前面是不是「已经收过句号」的终止标点；右引号不算隔断（`“What?”.` 一样不补）。"""
+    unquoted = tail.rstrip(_CLOSING_QUOTES)
+    return bool(unquoted) and unquoted[-1] in _TERMINAL_PUNCT
+_TAG_RE = re.compile('</?(?P<tag>i|b|sup|sub|sc|span)[^>]*>')
+_TAG_FMT = {'i': 'italic', 'b': 'bold', 'sup': 'superscript', 'sub': 'subscript'}
+
+def html_to_segments(html: str) -> list[tuple[str, dict]]:
+    """citeproc 的 html 输出 → (文本, 格式) 片段。只认 i/b/sup/sub，其余标签当分隔符丢掉。"""
+    from html import unescape
+    segments: list[tuple[str, dict]] = []
+    stack: list[str] = []
+    pos = 0
+    for match in _TAG_RE.finditer(html or ''):
+        if match.start() > pos:
+            text = unescape(html[pos:match.start()])
+            fmt = {_TAG_FMT[t]: True for t in stack if t in _TAG_FMT}
+            if text:
+                segments.append((text, fmt))
+        tag = match.group('tag')
+        if match.group(0).startswith('</'):
+            if tag in stack:
+                stack.reverse()
+                stack.remove(tag)
+                stack.reverse()
+        else:
+            stack.append(tag)
+        pos = match.end()
+    if pos < len(html or ''):
+        text = unescape(html[pos:])
+        fmt = {_TAG_FMT[t]: True for t in stack if t in _TAG_FMT}
+        if text:
+            segments.append((text, fmt))
+    return segments or [(unescape(html or ''), {})]
+
+def _suffix_label(index: int) -> str:
+    """0 → a，25 → z，26 → aa（CSL 的年份后缀序列）。"""
+    label = ''
+    index += 1
+    while index:
+        index, rest = divmod(index - 1, 26)
+        label = chr(ord('a') + rest) + label
+    return label
+
+def _suffix_index(label: str) -> int:
+    """`_suffix_label` 的逆：a → 0，aa → 26。"""
+    index = 0
+    for char in label:
+        index = index * 26 + ord(char) - ord('a') + 1
+    return index - 1
+_SUFFIX_DATE_RE = re.compile('^(\\d{4})([a-z]+)$')
+
+def _join_dates(dates: list[str], ranged: bool) -> str:
+    """同一作者下的年份串；ranged 时把同年后缀连续的 ≥3 条折成 `2020a–c`。
+
+    CSL 只在 year-suffix 系样式里折后缀，两条不折（citeproc-js 也不折）。
+    """
+    if not ranged:
+        return ', '.join(dates)
+    parts: list[str] = []
+    index = 0
+    while index < len(dates):
+        match = _SUFFIX_DATE_RE.match(dates[index])
+        if match:
+            year, suffix = (match.group(1), match.group(2))
+            start = _suffix_index(suffix)
+            end = index
+            while end + 1 < len(dates):
+                following = _SUFFIX_DATE_RE.match(dates[end + 1])
+                if not following or following.group(1) != year or _suffix_index(following.group(2)) != start + (end + 1 - index):
+                    break
+                end += 1
+            if end - index + 1 >= 3:
+                label = _suffix_label(start + end - index)
+                parts.append(f'{year}{suffix}–{label}')
+                index = end + 1
+                continue
+        parts.append(dates[index])
+        index += 1
+    return ', '.join(parts)
+
+def _declared_sort_keys(style_text: str) -> tuple[tuple[str, bool], ...]:
+    """`<bibliography><sort>` 里声明了哪几条排序键、各自升序还是降序。
+
+    CSL 把排序写成一串 `<key>`，每条指向一个宏或变量，还能带 `sort="descending"`。
+    完整求值宏是不必的——我们只认得出「作者 / 年份 / 题名 / 状态」四类，其余（卷号、
+    来源、事件日期这类）直接跳过：跳过的键只在前面几条全打平时才起作用。
+    """
+    bibliography = re.search('<bibliography\\b.*?</bibliography>', style_text, re.S)
+    sort = re.search('<sort>(.*?)</sort>', bibliography.group(0), re.S) if bibliography else None
+    if sort is None:
+        return ()
+    keys: list[tuple[str, bool]] = []
+    for attrs in re.findall('<key\\b([^>]*)>', sort.group(1)):
+        target = re.search('(?:macro|variable)="([^"]+)"', attrs)
+        kind = _sort_kind(target.group(1)) if target else ''
+        if not kind or (keys and keys[-1][0] == kind):
+            continue
+        keys.append((kind, 'sort="descending"' in attrs))
+    return tuple(keys)
+
+def _sort_kind(name: str) -> str:
+    """一条 `<key>` 指向宏名或变量名，归到我们排序时认的四类之一；认不出返回空串。"""
+    lowered = name.lower()
+    if lowered.startswith(('author', 'editor', 'contributor', 'composer')):
+        return 'names'
+    if lowered in ('issued', 'year') or lowered.startswith(('date', 'year')):
+        return 'year'
+    if lowered.startswith('title'):
+        return 'title'
+    return 'status' if lowered == 'status' else ''
+
+def _sort_value(kind: str, entry: dict, by_initials: bool=True):
+    """条目在某一类排序键上的取值。
+
+    作者按 `(姓, 名)` 逐位比较，名**不能省**：只比姓的话同姓不同人撞成一个键，顺序掉到
+    年份上——`Li, C. (2023)` 会排到 `Li, M. (2021)` 后面。名的形态由样式决定
+    （见 `_sort_names_initialized`）。
+    """
+    if kind == 'names':
+        people = entry.get('author') or entry.get('editor') or []
+        title = entry.get('title', '')
+        return tuple((((p.get('family') or p.get('literal') or '').casefold(), (initials(p.get('given') or '', '') if by_initials else ' '.join((p.get('given') or '').split())).casefold()) for p in people)) or ((title.casefold(), ''),)
+    if kind == 'year':
+        issued = (entry.get('issued') or {}).get('date-parts', [[9999]])
+        return issued[0][0] if issued and issued[0] else 9999
+    if kind == 'title':
+        return entry.get('title', '').casefold()
+    return entry.get('status', '') or ''
+
+def _sort_names_initialized(style_text: str) -> bool:
+    """排序键里的名是按首字母还是按全名比：看排序宏里那个 `name-as-sort-order` 的 `<name>`。
+
+    APA 的 `author-sort` 一路指到 `<name name-as-sort-order="all"/>`，样式根上又写了
+    `initialize-with=". "`，于是名收成首字母；Chicago 与 MLA 在同一处写了
+    `initialize="false"`，比的是全名。两档结果不同：APA 里 `C. 2019` 排在 `C. 2023` 前
+    （首字母分不开，落到年份），Chicago 里 `Chaoyang` 排在 `Chen` 前（全名分得开）。
+    两边都以 citeproc-js 的输出为准。
+    """
+    macros = dict(re.findall('<macro name="([^"]+)">(.*?)</macro>', style_text, re.S))
+    bibliography = re.search('<bibliography\\b.*?</bibliography>', style_text, re.S)
+    sort = re.search('<sort>.*?</sort>', bibliography.group(0), re.S) if bibliography else None
+    keys = re.findall('<key macro="([^"]+)"', sort.group(0)) if sort else []
+    if not keys:
+        return True
+    pending, seen, name_els = ([keys[0]], set(), [])
+    while pending:
+        macro = pending.pop()
+        if macro in seen or macro not in macros:
+            continue
+        seen.add(macro)
+        body = macros[macro]
+        name_els += [element for element in re.findall('<name\\b[^>]*>', body) if 'name-as-sort-order' in element]
+        pending += re.findall('macro="([^"]+)"', body)
+    if any(('initialize="false"' in element for element in name_els)):
+        return False
+    if any(('initialize-with' in element for element in name_els)):
+        return True
+    return bool(re.search('<style\\b[^>]*initialize-with=', style_text))
+
+def _as_narrative(text: str) -> str:
+    """把 `(Smith, 2024)` 改成 `Smith (2024)`；数字制 `[1]` 原样返回。
+
+    citeproc-py 不提供 CSL 的 author-in-text 形式，这是一次保守改写：只处理「整串被一对
+    圆括号包住、且括号里只有一个分号前的条目」的情形，其余原样返回，不做猜测。
+    """
+    stripped = text.strip()
+    if not (stripped.startswith('(') and stripped.endswith(')')):
+        return text
+    inner = stripped[1:-1]
+    if ';' in re.sub('&[a-zA-Z#0-9]+;', '', inner):
+        return text
+    match = re.match('^(?P<author>.+?),\\s*(?P<rest>\\d{4}[a-z]?(?:,\\s*p{1,2}\\.\\s*[\\d\\-–]+)?)$', inner.strip())
+    if not match:
+        return text
+    return f"{match.group('author')} ({match.group('rest')})"
+
+def cited_keys(model) -> list[str]:
+    """文档模型里引用到的文献 key，按出现顺序去重。
+
+    年份后缀必须在第一次渲染之前定下来，而引擎是在模型读出来之前建的，
+    所以由调用方读完模型再把 key 交回去（`CitationEngine.reserve`）。
+    """
+    from word_markdown.model.document import Citation as CitationNode
+    found: list[str] = []
+
+    def walk(node) -> None:
+        if isinstance(node, CitationNode):
+            found.extend((item.key for item in node.items))
+            return
+        if node is None or isinstance(node, str):
+            return
+        if isinstance(node, (list, tuple)):
+            for child in node:
+                walk(child)
+            return
+        if dataclasses.is_dataclass(node) and (not isinstance(node, type)):
+            for field in dataclasses.fields(node):
+                walk(getattr(node, field.name))
+    walk(model)
+    return list(dict.fromkeys(found))
+
+def _unique(pairs) -> list:
+    """同一条引用里同一个 key 只算一次（CSL 要求消重），定位符不同的保留第一处。"""
+    seen: set = set()
+    unique = []
+    for pair in pairs:
+        if pair[0] in seen:
+            continue
+        seen.add(pair[0])
+        unique.append(pair)
+    return unique
+
+def _expand_range(value: str) -> str:
+    """`33-5` → `33-35`（CSL 的 `page-range-format="expanded"`）。"""
+
+    def repl(m: re.Match) -> str:
+        start, end = (m.group(1), m.group(2))
+        if len(end) < len(start):
+            end = start[:len(start) - len(end)] + end
+        return f'{start}–{end}'
+    return re.sub('(?<![\\d.])(\\d+)\\s*[-\\u2013]\\s*(\\d+)(?![\\d.])', repl, value)
+
+def _with_year_suffix(text: str, entry: dict) -> str:
+    """样式没引用 `year-suffix` 变量时，按 CSL 默认位置把后缀补在年份后面。
+
+    规范说后缀默认跟在「cite 与文献表里 cs:date 渲染出的第一个年份」后面，是否显式渲染
+    由样式决定；citeproc-py 两样都不做，所以缺了这一步的样式（如 elsevier-harvard）
+    后缀根本不出现，同一作者同年的文献就撞车。
+    """
+    suffix = entry.get('year-suffix')
+    if not suffix:
+        return text
+    issued = (entry.get('issued') or {}).get('date-parts', [[None]])
+    year = str(issued[0][0]) if issued and issued[0] else ''
+    if not year or f'{year}{suffix}' in text:
+        return text
+    return text.replace(year, f'{year}{suffix}', 1)
+
+def _citation_block(style_text: str) -> str:
+    start = style_text.find('<citation')
+    end = style_text.find('</citation>')
+    return style_text[start:end + len('</citation>')] if start >= 0 and end >= 0 else ''
+
+def _groups(texts: dict) -> list:
+    """把渲染结果相同的条目归成一组；只返回撞车的那些组。"""
+    buckets: dict = {}
+    for key, text in texts.items():
+        buckets.setdefault(text, []).append(key)
+    return [group for group in buckets.values() if len(group) > 1]
+
+def _max_extra_names(entries: list) -> int:
+    """补名字最多补到把作者全列出来为止。"""
+    return max((len(entry.get('author') or entry.get('editor') or []) for entry in entries), default=1) - 1

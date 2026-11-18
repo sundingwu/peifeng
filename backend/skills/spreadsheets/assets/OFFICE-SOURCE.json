@@ -1,0 +1,13 @@
+{
+  "source": "skills-main/xlsx",
+  "license": "Apache-2.0",
+  "integration": "按功能迁入本技能，去除外部命令与CLI转发；通用read仅分发。",
+  "integrated_files": {
+    "SKILL.md": "a80ed8b0fc483013c0711fb059b78ee98a69ec66b12ba927ff37f280b48525c4",
+    "assets/SOURCE-LICENSE.txt": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd",
+    "references/guide.md": "23984f2dbba4e95a4de80844c670865b8f0d8f2c37ad0a0b4d2c9874be6cf978",
+    "scripts/edit_workbook.py": "e0e9a981636eda27a2045c1d5945ad0fb776d710ea04f63b6f5cf9c2bc60af50",
+    "scripts/read_document.py": "1e0057372a2bd084f9294260b39081be127472ea00400ba40cf8b0b0ddd71389",
+    "scripts/workbook_files.py": "37ff3e4f7b938f1cfc48d6b116bd9b28f91ebbd459e05e1467f691c7baacda36"
+  }
+}

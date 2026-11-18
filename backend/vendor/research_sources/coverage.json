@@ -1,0 +1,263 @@
+[
+  {
+    "source_project": "academic-research-skills-main",
+    "source_entry": "academic-paper/SKILL.md",
+    "local_skill": "paper-writing",
+    "resource": "methods.md",
+    "section": "章节功能",
+    "adaptation": "方法融合",
+    "boundary": "无12-agent生成评估链；格式与披露交既有文档/投稿skill"
+  },
+  {
+    "source_project": "academic-research-skills-main",
+    "source_entry": "academic-paper-reviewer/SKILL.md",
+    "local_skill": "research-review",
+    "resource": "methods.md",
+    "section": "修订、覆盖与校准",
+    "adaptation": "方法融合",
+    "boundary": "单上下文多视角，排除独立评审席位、跨模型与自动重复校准"
+  },
+  {
+    "source_project": "academic-research-skills-main",
+    "source_entry": "academic-pipeline/SKILL.md",
+    "local_skill": "research-planning",
+    "resource": "methods.md",
+    "section": "自包含派发与调整",
+    "adaptation": "架构适配",
+    "boundary": "使用PeiFeng Mentor，不移植原10阶段状态机、模型分层或额外日志"
+  },
+  {
+    "source_project": "academic-research-skills-main",
+    "source_entry": "deep-research/SKILL.md",
+    "local_skill": "literature-review",
+    "resource": "methods.md",
+    "section": "叙述综述与快速扫描",
+    "adaptation": "方法融合",
+    "boundary": "交既有researcher/mentor；不启用13-agent、自动登记或PRISMA认证"
+  },
+  {
+    "source_project": "academic-research-skills-main",
+    "source_entry": "sr-screener/SKILL.md",
+    "local_skill": "literature-review",
+    "resource": "methods.md",
+    "section": "筛选决策",
+    "adaptation": "部分执行适配",
+    "boundary": "没有独立双盲评审、第三模型、Rayyan/Covidence连接；人工覆盖与冲突仅按给定记录处理"
+  },
+  {
+    "source_project": "nature-skills-main",
+    "source_entry": "skills/nature-academic-search/SKILL.md",
+    "local_skill": "citation-management",
+    "resource": "methods.md",
+    "section": "严格他引与施引影响",
+    "adaptation": "部分执行适配",
+    "boundary": "保留公开HTTP和本地格式，排除MCP、Scopus/WoS等凭据路径，不保证全量施引覆盖"
+  },
+  {
+    "source_project": "nature-skills-main",
+    "source_entry": "skills/nature-citation/SKILL.md",
+    "local_skill": "citation-management",
+    "resource": "methods.md",
+    "section": "主张到证据",
+    "adaptation": "部分执行适配",
+    "boundary": "脚本导出仅已支持BibTeX/RIS/JSON；不声称原ENW/RDF/HTML浏览器自动导出"
+  },
+  {
+    "source_project": "nature-skills-main",
+    "source_entry": "skills/nature-data/SKILL.md",
+    "local_skill": "submission-check",
+    "resource": "methods.md",
+    "section": "数据、代码与FAIR",
+    "adaptation": "方法融合",
+    "boundary": "不上传、注册或虚构DOI/许可/伦理信息"
+  },
+  {
+    "source_project": "nature-skills-main",
+    "source_entry": "skills/nature-downloader/SKILL.md",
+    "local_skill": "paper-download",
+    "resource": "methods.md",
+    "section": "公开文档获取与核对",
+    "adaptation": "部分执行适配",
+    "boundary": "排除CNKI机构登录、Node批量器、出版商密钥、浏览器账号路线"
+  },
+  {
+    "source_project": "nature-skills-main",
+    "source_entry": "skills/nature-experiment-log/SKILL.md",
+    "local_skill": "experiments",
+    "resource": "methods.md",
+    "section": "材料整理",
+    "adaptation": "部分执行适配",
+    "boundary": "不接飞书/Obsidian；无本地语音转录依赖，已有转录或看图按实际能力处理"
+  },
+  {
+    "source_project": "nature-skills-main",
+    "source_entry": "skills/nature-figure/SKILL.md",
+    "local_skill": "research-figures",
+    "resource": "nature-workflow.md",
+    "section": "多面板与导出",
+    "adaptation": "Python执行适配",
+    "boundary": "排除R、OpenRouter/图像生成；PDFium几何近似，非完整视觉/科学审稿保证"
+  },
+  {
+    "source_project": "nature-skills-main",
+    "source_entry": "skills/nature-image2ppt/SKILL.md",
+    "local_skill": "presentation-slides",
+    "resource": "group-meeting.md",
+    "section": "论文类型与截图重建",
+    "adaptation": "部分方法适配",
+    "boundary": "只组合现有看图和PPT Master SVG路线，不含原图像模型/自动OCR/像素级流水线"
+  },
+  {
+    "source_project": "nature-skills-main",
+    "source_entry": "skills/nature-literature-pipeline/SKILL.md",
+    "local_skill": "literature-search",
+    "resource": "methods.md",
+    "section": "六维候选排序",
+    "adaptation": "部分执行适配",
+    "boundary": "用户触发，排除cron/消息推送/自动长期归档；评分启发式由模型给理由，非验证后的质量分数"
+  },
+  {
+    "source_project": "nature-skills-main",
+    "source_entry": "skills/nature-paper-card/SKILL.md",
+    "local_skill": "paper-reading",
+    "resource": "paper-card.md",
+    "section": "十六节精读卡",
+    "adaptation": "Python与方法适配",
+    "boundary": "清单提取未自动识别全部图表；未核清单返回警告，不能冒充覆盖通过"
+  },
+  {
+    "source_project": "nature-skills-main",
+    "source_entry": "skills/nature-paper-to-patent/SKILL.md",
+    "local_skill": "research-proposal",
+    "resource": "methods.md",
+    "section": "专利交底与草案",
+    "adaptation": "部分方法适配",
+    "boundary": "不移植原专利专用构建/法律审查/申请提交；仅基于材料草拟，不提供授权结论"
+  },
+  {
+    "source_project": "nature-skills-main",
+    "source_entry": "skills/nature-paper-trans/SKILL.md",
+    "local_skill": "paper-reading",
+    "resource": "reader-format.md",
+    "section": "双语阅读与来源映射",
+    "adaptation": "受限替代",
+    "boundary": "原生图像生成逐页保版路线不迁移；不能保证源论文版式、分栏或视觉完全还原"
+  },
+  {
+    "source_project": "nature-skills-main",
+    "source_entry": "skills/nature-paper-xray/SKILL.md",
+    "local_skill": "paper-reading",
+    "resource": "methods.md",
+    "section": "深读与X-ray",
+    "adaptation": "方法融合",
+    "boundary": "不捏作者动机，不替代正式审稿或完整翻译"
+  },
+  {
+    "source_project": "nature-skills-main",
+    "source_entry": "skills/nature-paper2ppt/SKILL.md",
+    "local_skill": "presentation-slides",
+    "resource": "group-meeting.md",
+    "section": "论文类型与截图重建",
+    "adaptation": "Python与方法适配",
+    "boundary": "使用既有唯一PPT Master引擎，保留用户背景与两个模板"
+  },
+  {
+    "source_project": "nature-skills-main",
+    "source_entry": "skills/nature-paper2word/SKILL.md",
+    "local_skill": "document-formatting",
+    "resource": "operations.md",
+    "section": "格式要求与参考稿迁移",
+    "adaptation": "Python执行适配",
+    "boundary": "仅宣称实际引擎支持的格式；不做Office原生分页/PDF导出或TeX编译"
+  },
+  {
+    "source_project": "nature-skills-main",
+    "source_entry": "skills/nature-polishing/SKILL.md",
+    "local_skill": "paper-writing",
+    "resource": "methods.md",
+    "section": "起草、润色与教学模式",
+    "adaptation": "方法融合",
+    "boundary": "目标期刊现行数值规则要另核，样例不成为硬规则"
+  },
+  {
+    "source_project": "nature-skills-main",
+    "source_entry": "skills/nature-proposal-writer/SKILL.md",
+    "local_skill": "research-proposal",
+    "resource": "methods.md",
+    "section": "研究计划",
+    "adaptation": "方法融合",
+    "boundary": "复用现有角色与文档脚本，不新增多层模型流水线"
+  },
+  {
+    "source_project": "nature-skills-main",
+    "source_entry": "skills/nature-reader/SKILL.md",
+    "local_skill": "paper-reading",
+    "resource": "reader-format.md",
+    "section": "双语阅读与来源映射",
+    "adaptation": "部分执行适配",
+    "boundary": "扫描输入不自动获得完整OCR；PDF提取与当前看图能力需实际核查"
+  },
+  {
+    "source_project": "nature-skills-main",
+    "source_entry": "skills/nature-ref-verifier/SKILL.md",
+    "local_skill": "citation-management",
+    "resource": "methods.md",
+    "section": "书目与版本",
+    "adaptation": "部分执行适配",
+    "boundary": "只有公开源，排除Zotero同步和必须账号的数据库，不保证处处多源"
+  },
+  {
+    "source_project": "nature-skills-main",
+    "source_entry": "skills/nature-response/SKILL.md",
+    "local_skill": "review-response",
+    "resource": "methods.md",
+    "section": "逐点映射",
+    "adaptation": "方法融合",
+    "boundary": "不替作者承诺未完成实验；跨角色审计按现有权限交接"
+  },
+  {
+    "source_project": "nature-skills-main",
+    "source_entry": "skills/nature-reviewer/SKILL.md",
+    "local_skill": "research-review",
+    "resource": "methods.md",
+    "section": "科学与领域检查",
+    "adaptation": "方法融合",
+    "boundary": "单上下文模拟，不声称真实编辑决定或互盲"
+  },
+  {
+    "source_project": "nature-skills-main",
+    "source_entry": "skills/nature-shared/SKILL.md",
+    "local_skill": "paper-writing",
+    "resource": "methods.md",
+    "section": "证据边界与精简修改",
+    "adaptation": "内化支持",
+    "boundary": "共用原则就地压缩，不注册原内部支持skill，不默认加载全部资料"
+  },
+  {
+    "source_project": "nature-skills-main",
+    "source_entry": "skills/nature-social-science/SKILL.md",
+    "local_skill": "research-design",
+    "resource": "methods.md",
+    "section": "问题链与八步收敛",
+    "adaptation": "方法融合",
+    "boundary": "不默认量化或全球新颖，不替代研究者和导师决策"
+  },
+  {
+    "source_project": "nature-skills-main",
+    "source_entry": "skills/nature-statistics/SKILL.md",
+    "local_skill": "data-analysis",
+    "resource": "methods.md",
+    "section": "统计报告与方法选择",
+    "adaptation": "Python与方法适配",
+    "boundary": "内置CLI仅四类运算；其他模型/功效/校正需项目Python，不宣称已内置"
+  },
+  {
+    "source_project": "nature-skills-main",
+    "source_entry": "skills/nature-writing/SKILL.md",
+    "local_skill": "paper-writing",
+    "resource": "methods.md",
+    "section": "章节功能",
+    "adaptation": "方法融合",
+    "boundary": "首投规范与披露由submission-check按实际政策准备"
+  }
+]

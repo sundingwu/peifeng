@@ -1,0 +1,599 @@
+"""word_markdown.model.reader — 契约 Markdown → 文档模型。
+
+只认本工具定义的语法子集（标题、段落样式行、列表、表格、图片、公式、引用块、代码块、
+脚注、短代码），不追求 CommonMark 全兼容：语法由我们定义，解析器自然也只认这一套。
+
+实现是行级状态机 + 内联扫描。模型表达不了的写法，补在这里，而不是在输出端打补丁。
+"""
+from __future__ import annotations
+import re
+import string
+from typing import Optional
+import yaml
+from html import unescape
+from word_markdown.utils.skill_utils import split_frontmatter
+from word_markdown.model.document import Block, Citation, CitationItem, Code, CodeBlock, CrossRef, Document, Emphasis, Equation, Figure, Footnote, FootnoteRef, Heading, LineBreak, Link, ListBlock, ListItem, Math, Metadata, MAX_LIST_LEVEL, PageBreak, Paragraph, Quote, SectionBreak, Strikethrough, Strong, Subscript, Superscript, Table, Text, Toc, Underline
+from word_markdown.preprocessor.blocks import hard_break, resolve_style_name, split_style_line
+from word_markdown.utils.typography import smart_quotes
+_HEADING_RE = re.compile('^(#{1,6})\\s+(.*)$')
+_FENCE_RE = re.compile('^(```|~~~)(.*)$')
+_SHORTCODE_RE = re.compile('^\\{\\{<\\s*([a-z]+)(.*?)>\\}\\}\\s*$')
+_IMAGE_ONLY_RE = re.compile('^!\\[(?P<alt>[^\\]]*)\\]\\((?P<path>[^)\\s]+)\\)\\s*(?P<attrs>\\{[^}]*\\})?\\s*$')
+_WIDTH_RE = re.compile('width\\s*=\\s*([\\d.]+)\\s*(cm|mm|in|pt|%)?')
+_LABEL_RE = re.compile('\\{#(?P<label>[\\w:.\\-]+)\\}\\s*$')
+_BULLET_RE = re.compile('^(?P<indent>\\s*)[-*+]\\s+(?P<text>.*)$')
+_ORDERED_RE = re.compile('^(?P<indent>\\s*)(?P<num>\\d+)[.)]\\s+(?P<text>.*)$')
+_FOOTNOTE_DEF_RE = re.compile('^\\[\\^(?P<label>[^\\]]+)\\]:\\s*(?P<text>.*)$')
+_TABLE_ROW_RE = re.compile('^\\s*\\|(?P<body>.*)\\|\\s*$')
+_TABLE_SEP_RE = re.compile('^\\s*\\|[\\s:|-]+\\|\\s*$')
+_SECTION_PARAM_RE = re.compile('(\\S+?)=(\\S+)')
+_QUOTE_LINE_RE = re.compile('^\\s*>\\s?')
+_SECTION_ALIAS = {'页码': 'page_format', 'page_number': 'page_format', 'format': 'page_format', '起始': 'start', 'start': 'start', '页眉': 'no_header', 'header': 'no_header', '页脚': 'no_footer', 'footer': 'no_footer'}
+_SECTION_OFF = {'无', 'none', 'no', 'false', '不要'}
+
+def _indent_width(indent: str) -> int:
+    """缩进宽度（制表符按四空格算）：Markdown 用缩进表达列表嵌套。"""
+    return len(indent.expandtabs(4))
+
+def _emphasis(name: str, delim: str, body: str, single: bool=False) -> str:
+    """一条强调分支：正常边界 + 词内边界（见上）。
+
+    词内那半的正文把 `*` 排除在外：`(.+?)` 在「闭符右边紧挨字母数字」判失败后会继续往右
+    找闭符，一路把整行吞成一段强调。
+
+    `single=True`（斜体）时开闭符都不许挨着另一个星号：`**粗**` 的星号是加粗的语法，
+    从第二个星号起配对会得到「星号照印 + 中间变斜体」（`x**B**y`），两头都错。
+    """
+    no_open = '(?<!\\*)' if single else ''
+    no_close = '(?!\\*)' if single else ''
+    return '|(?P<%s>%s(?<![A-Za-z0-9_])%s(?=[^\\s*])(%s)(?<=[^\\s*])%s%s|(?<=[A-Za-z0-9_])%s(?=[^\\s*])([^*\\n]+?)(?<=[^\\s*])%s(?![A-Za-z0-9_])%s)' % (name, no_open, delim, body, delim, no_close, delim, delim, no_close)
+_INLINE_RE = re.compile('(?P<code>``[^`]*(?:`[^`]*)*``|`[^`]+`)|(?P<math>\\$(?=\\S)(?:\\\\.|[^$\\\\\\n])*\\S\\$)' + _emphasis('strongem', '\\*\\*\\*', '.+?') + _emphasis('strong', '\\*\\*', '.+?') + '|(?P<del>~~(?=[^\\s~])(.+?)(?<=[^\\s~])~~)|(?P<underline>\\[[^\\]]+\\]\\{\\.underline\\})|(?P<link>\\[[^\\]]*\\]\\((?:[^()\\s]|\\([^()\\s]*\\)|\\s+\\"[^\\"]*\\")*\\))|(?P<footnote>\\[\\^[^\\]]+\\])|(?P<citation>\\[[^\\]]*@[^\\]]*\\])|(?P<crossref>(?<![A-Za-z0-9_@])@[\\w:.\\-]+)|(?P<sup>\\^[^^\\s][^^\\n]*\\^)|(?P<sub>~[^~\\s][^~\\n]*~)' + _emphasis('em', '\\*', '.+?', single=True))
+_ESCAPE_RE = re.compile('\\\\([%s])|\\\\text(asciitilde|less|greater|backslash)' % re.escape(''.join(string.punctuation)))
+_ESCAPED_STAR_RE = re.compile('\\\\\\*')
+_TEXT_ESCAPES = {'asciitilde': '~', 'less': '<', 'greater': '>', 'backslash': '\\'}
+_ESCAPE_HOLD = '\ue000'
+
+def _protect_escapes(text: str, taken: int=0) -> tuple[str, dict[str, str]]:
+    """把 `\\*` 这类转义换成占位符，避免它们参与强调符号配对。
+
+    返回 (替换后的文本, 占位符→原字符)。代码段里保持不变：代码是逐字内容，
+    反斜杠在那里没有转义含义。
+    """
+    if '\\' not in text:
+        return (text, {})
+    hold: dict[str, str] = {}
+    out: list[str] = []
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == '`':
+            end = text.find('`', i + 1)
+            end = len(text) if end == -1 else end + 1
+            out.append(text[i:end])
+            i = end
+            continue
+        if ch == '$':
+            end = i + 1
+            while (end := text.find('$', end)) != -1 and text[end - 1] == '\\':
+                end += 1
+            if end != -1:
+                out.append(text[i:end + 1])
+                i = end + 1
+                continue
+        m = _ESCAPE_RE.match(text, i)
+        if m:
+            literal = _TEXT_ESCAPES[m.group(2)] if m.group(2) else m.group(1)
+            placeholder = chr(ord(_ESCAPE_HOLD) + taken + len(hold))
+            hold[placeholder] = literal
+            out.append(placeholder)
+            i = m.end()
+            continue
+        out.append(ch)
+        i += 1
+    return (''.join(out), hold)
+
+def _restore(text: str, hold: dict[str, str]) -> str:
+    if not hold:
+        return text
+    return ''.join((hold.get(ch, ch) for ch in text))
+
+def inline_residue(line: str) -> tuple[str, list[tuple[int, int]]]:
+    """(没被行内语法吃掉的字符, 被吃掉的区间)。
+
+    残符串长度与原行一致，被吃掉的字符换成空格。预检的残符提醒拿它找「形态像强调、
+    却没解析成强调」的星号：已经被当作语法的星号、`\\*` 转义、代码与公式里的星号都不会
+    留在残符里。判据就是 `parse_inlines` 那一条正则——预检另写一套，迟早对不上。
+    """
+    guarded = _ESCAPED_STAR_RE.sub('  ', line)
+    blank = list(guarded)
+    spans = [match.span() for match in _INLINE_RE.finditer(guarded)]
+    for start, end in spans:
+        for i in range(start, end):
+            blank[i] = ' '
+    return (''.join(blank), spans)
+
+def unparsed_stars(line: str) -> str:
+    """只取残符串（见 `inline_residue`）。"""
+    return inline_residue(line)[0]
+_CITE_TOKEN_RE = re.compile('(?P<suppress>-)?@(?P<key>[\\w:.\\-]+)(?P<rest>(?:,\\s*[^;\\[\\]]+)?)')
+_NARRATIVE_LOCATOR_RE = re.compile('\\s*\\[(?P<loc>[^\\]]+)\\]')
+_LABELS = {'p': 'page', 'pp': 'page', 'page': 'page', 'pages': 'page', 'chap': 'chapter', 'chapter': 'chapter', 'sec': 'section', 'section': 'section', 'para': 'paragraph', 'paragraph': 'paragraph', 'fig': 'figure', 'figure': 'figure', 'tbl': 'table', 'table': 'table', 'n': 'note', 'note': 'note', 'vol': 'volume', 'volume': 'volume', 'no': 'issue', 'issue': 'issue'}
+
+def _locator(raw: str) -> tuple[str, str]:
+    """`p. 33` → ("page", "33")，`chap. 3` → ("chapter", "3")；不认识的标签按 page。"""
+    text = raw.strip().lstrip(', ').strip()
+    m = re.match('^(?P<label>[A-Za-z]{1,11})\\.?\\s+(?P<value>.+)$', text)
+    if m and m.group('label').lower() in _LABELS:
+        return (_LABELS[m.group('label').lower()], m.group('value').strip())
+    return ('page', text)
+
+def _parse_citation_body(body: str, narrative: bool) -> Citation:
+    inner = body.strip()
+    if inner.startswith('[') and inner.endswith(']'):
+        inner = inner[1:-1]
+    items: list[CitationItem] = []
+    for chunk in re.split(';', inner):
+        chunk = chunk.strip()
+        m = _CITE_TOKEN_RE.search(chunk)
+        if not m:
+            continue
+        prefix = chunk[:m.start()].strip()
+        label, locator = _locator(m.group('rest') or '')
+        items.append(CitationItem(key=m.group('key'), prefix=prefix, locator=locator, label=label, suppress_author=bool(m.group('suppress'))))
+    return Citation(items=tuple(items), narrative=narrative)
+
+def parse_inlines(text: str, citation_keys: Optional[set[str]]=None, hold: Optional[dict[str, str]]=None) -> list:
+    """把一行内联 Markdown 切成节点序列。
+
+    `citation_keys` 是文献库里已知的 key 集合。`@key` 既可能是叙述式文献引用，也可能是
+    稿内交叉引用，语义靠 key 是否存在于 .bib 区分——不传这个集合时一律当交叉引用，
+    由调用方稍后归类。密钥要**逐层下传**：`**[@a]**` 里那层同样要能认出引用。
+    """
+    hold: dict[str, str] = dict(hold or {})
+    guarded, fresh = _protect_escapes(text or '', taken=len(hold))
+    hold.update(fresh)
+
+    def sub(inner: str) -> tuple:
+        return tuple(parse_inlines(inner, citation_keys, hold))
+    nodes: list = []
+    pos = 0
+    for m in _INLINE_RE.finditer(guarded):
+        if m.start() > pos:
+            nodes.append(Text(smart_quotes(_restore(guarded[pos:m.start()], hold))))
+        kind = m.lastgroup
+        raw = m.group(0)
+        if kind == 'code':
+            tick = 2 if raw.startswith('``') and raw.endswith('``') and (len(raw) > 4) else 1
+            nodes.append(Code(_restore(raw[tick:-tick], hold)))
+        elif kind == 'math':
+            nodes.append(Math(raw[1:-1]))
+        elif kind == 'strongem':
+            nodes.append(Strong(children=(Emphasis(children=sub(raw[3:-3])),)))
+        elif kind == 'strong':
+            nodes.append(Strong(children=sub(raw[2:-2])))
+        elif kind == 'em':
+            nodes.append(Emphasis(children=sub(raw[1:-1])))
+        elif kind == 'del':
+            nodes.append(Strikethrough(children=sub(raw[2:-2])))
+        elif kind == 'underline':
+            nodes.append(Underline(children=sub(raw[1:raw.index(']')])))
+        elif kind == 'link':
+            label, url = raw[1:-1].split('](', 1)
+            nodes.append(Link(children=sub(label), url=_without_title(url)))
+        elif kind == 'footnote':
+            nodes.append(FootnoteRef(label=raw[2:-1]))
+        elif kind == 'citation':
+            nodes.append(_parse_citation_body(raw, narrative=False))
+        elif kind == 'crossref':
+            key = raw[1:].rstrip('.')
+            trailing = raw[1 + len(key):]
+            end = m.end()
+            if citation_keys and key in citation_keys:
+                hit = _NARRATIVE_LOCATOR_RE.match(guarded[end:])
+                label, locator = _locator(hit.group('loc')) if hit else ('page', '')
+                if hit:
+                    end += hit.end()
+                nodes.append(Citation(items=(CitationItem(key=key, locator=locator, label=label),), narrative=True))
+            else:
+                nodes.append(CrossRef(target=key))
+            if trailing:
+                nodes.append(Text(trailing))
+            pos = end
+            continue
+        elif kind == 'sup':
+            nodes.append(Superscript(children=sub(raw[1:-1])))
+        elif kind == 'sub':
+            nodes.append(Subscript(children=sub(raw[1:-1])))
+        pos = m.end()
+    if pos < len(guarded):
+        nodes.append(Text(smart_quotes(unescape(_restore(guarded[pos:], hold)))))
+    return nodes
+_RE_LINK_TITLE = re.compile('^(.*?)\\s+\\"[^\\"]*\\"$')
+
+def _without_title(target: str) -> str:
+    """`https://x "标题"` → `https://x`。Word 里没有悬浮提示，title 不落产物。"""
+    found = _RE_LINK_TITLE.match(target)
+    return found.group(1) if found else target
+
+def _metadata(raw: str) -> Metadata:
+    try:
+        data = yaml.safe_load(raw) if raw.strip() else {}
+    except yaml.YAMLError:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    crossref = data.get('crossref') if isinstance(data.get('crossref'), dict) else {}
+    return Metadata(bibliography=raw_bib[0] if isinstance((raw_bib := data.get('bibliography')), list) and raw_bib else raw_bib, csl=data.get('csl'), crossref=crossref, chapters=bool(crossref.get('chapters')), link_citations=data.get('link-citations', True) is not False)
+
+def _split_table_cells_raw(body: str) -> list[str]:
+    """切分表格单元格，保护转义竖线 \\|、行内代码 `...` 以及行内公式 $...$ 中的竖线。
+
+    保留每格原样（含行尾空白）：行尾两个空格是换行标记，先 `strip()` 就再也认不出来了。
+    """
+    cells: list[str] = []
+    current: list[str] = []
+    i = 0
+    n = len(body)
+    in_code = False
+    in_math = False
+    while i < n:
+        ch = body[i]
+        if ch == '\\' and i + 1 < n and (body[i + 1] == '|'):
+            current.append('|' if in_code else '\\|')
+            i += 2
+            continue
+        elif ch == '`':
+            in_code = not in_code
+            current.append(ch)
+            i += 1
+            continue
+        elif ch == '$' and (not in_code):
+            in_math = not in_math
+            current.append(ch)
+            i += 1
+            continue
+        elif ch == '|' and (not in_code) and (not in_math):
+            cells.append(''.join(current))
+            current = []
+            i += 1
+            continue
+        current.append(ch)
+        i += 1
+    cells.append(''.join(current))
+    return cells
+
+def split_table_cells(body: str) -> list[str]:
+    """去空白后的单元格文本：列宽、对齐、列数都按它判断，行尾空格在那里没有意义。"""
+    return [cell.strip() for cell in _split_table_cells_raw(body)]
+
+def _table_cells(line: str) -> list[str]:
+    body = _TABLE_ROW_RE.match(line).group('body')
+    return split_table_cells(body)
+
+def _table_cell_texts(line: str) -> list[str]:
+    """未去空白的单元格文本，给「单元格内联」用：换行标记要在去空白之前识别。"""
+    body = _TABLE_ROW_RE.match(line).group('body')
+    return _split_table_cells_raw(body)
+
+def _column_widths(separator: str) -> Optional[list[float]]:
+    """分隔行短横线长短 → 相对列宽。全等或缺失时返回 None（表示「按内容排」）。
+
+    只数短横线，不数对齐用的冒号：`:---` 与 `:---:` 都是三根短横线，作者只是要居中，
+    不该被读成 3:4 的列宽比例。
+    """
+    dashes = [cell.count('-') for cell in _table_cells(separator)]
+    if not dashes or len(set(dashes)) == 1:
+        return None
+    return [float(d) for d in dashes]
+
+def _alignments(separator: str) -> list[str | None]:
+    """分隔行的冒号 → 每列对齐方式；**没写冒号的列是 `None`（不表态）**。
+
+    普通 `|---|` 不是「左对齐」，是「没说」：这一列的段落对齐应由「紧凑：」这类样式行
+    决定。当成左对齐写进产物，就成了直接格式，把作者写在样式里的「居中」盖掉。
+    """
+    out = []
+    for cell in _table_cells(separator):
+        left, right = (cell.startswith(':'), cell.endswith(':'))
+        if left and right:
+            out.append('center')
+        elif right:
+            out.append('right')
+        elif left:
+            out.append('left')
+        else:
+            out.append(None)
+    return out
+
+def _parse_section_params(rest: str) -> SectionBreak:
+    kwargs: dict = {}
+    for key, value in _SECTION_PARAM_RE.findall(rest or ''):
+        field = _SECTION_ALIAS.get(key)
+        if field == 'start':
+            kwargs['start'] = int(value) if value.isdigit() else 1
+        elif field == 'page_format':
+            kwargs['page_format'] = value
+        elif field in ('no_header', 'no_footer') and value.strip().lower() in _SECTION_OFF:
+            kwargs[field] = True
+    return SectionBreak(**kwargs)
+
+def _parse_shortcode(name: str, rest: str) -> Optional[Block]:
+    if name == 'pagebreak':
+        return PageBreak()
+    if name == 'toc':
+        arg = rest.strip()
+        return Toc(depth=int(arg) if arg.isdigit() else None)
+    if name == 'section':
+        return _parse_section_params(rest)
+    return None
+
+def _starts_block(line: str) -> bool:
+    """这一行是不是另一个块的开始（列表接续时用来判断该不该把行收进来）。"""
+    s = line.strip()
+    if not s:
+        return True
+    return bool(_FENCE_RE.match(s) or _HEADING_RE.match(s) or _SHORTCODE_RE.match(s) or _FOOTNOTE_DEF_RE.match(s) or _TABLE_ROW_RE.match(s) or _IMAGE_ONLY_RE.match(s) or s.startswith('$$') or s.startswith('>') or (s == '---') or _BULLET_RE.match(line) or _ORDERED_RE.match(line) or (split_style_line(line) is not None))
+
+class _Reader:
+
+    def __init__(self, body: str, citation_keys: Optional[set[str]]=None) -> None:
+        self.lines = body.split('\n')
+        self.citation_keys = citation_keys
+        self.doc = Document()
+        self.pending_style: Optional[tuple[str, str]] = None
+        self.pending_prose: Optional[list] = None
+
+    def _inl(self, text: str) -> list:
+        """块内统一的内联入口：任何块都必须带上文献库 key 集合。"""
+        return parse_inlines(text, self.citation_keys)
+
+    def _flush_pending(self) -> None:
+        """把待定的样式段落与还没收尾的正文段落落盘。"""
+        if self.pending_style is not None:
+            style, content = self.pending_style
+            self.pending_style = None
+            self.doc.blocks.append(Paragraph(inlines=self._inl(content), style=style))
+        if self.pending_prose is not None:
+            inlines, self.pending_prose = (self.pending_prose, None)
+            self.doc.blocks.append(Paragraph(inlines=inlines))
+
+    def _append(self, block: Block) -> None:
+        """统一入口：入块之前先把待定的样式段落落盘，顺序即位置。"""
+        self._flush_pending()
+        self.doc.blocks.append(block)
+
+    def _make_style_paragraph(self, name: str, content: str) -> None:
+        resolved = resolve_style_name(name)
+        if resolved is None:
+            return
+        self._flush_pending()
+        self.pending_style = (resolved, content)
+
+    def read(self) -> Document:
+        i, n = (0, len(self.lines))
+        while i < n:
+            line = self.lines[i]
+            stripped = line.strip()
+            if not stripped:
+                self._flush_pending()
+                i += 1
+                continue
+            fence = _FENCE_RE.match(stripped)
+            if fence:
+                i = self._read_code_block(i, fence)
+                continue
+            split = split_style_line(line)
+            if split is not None:
+                self._make_style_paragraph(split[0], split[1])
+                i += 1
+                continue
+            fn = _FOOTNOTE_DEF_RE.match(stripped)
+            if fn:
+                self._flush_pending()
+                self.doc.footnotes.append(Footnote(label=fn.group('label'), blocks=[Paragraph(inlines=self._inl(fn.group('text')))]))
+                i += 1
+                continue
+            heading = _HEADING_RE.match(stripped)
+            if heading:
+                self._flush_pending()
+                self._append(Heading(level=len(heading.group(1)), inlines=self._inl(heading.group(2).rstrip().rstrip('#').rstrip())))
+                i += 1
+                continue
+            shortcode = _SHORTCODE_RE.match(stripped)
+            if shortcode:
+                block = _parse_shortcode(shortcode.group(1), shortcode.group(2))
+                if block is not None:
+                    self._flush_pending()
+                    self._append(block)
+                    i += 1
+                    continue
+            if stripped.startswith('$$'):
+                i = self._read_equation(i)
+                continue
+            if _TABLE_ROW_RE.match(stripped) and i + 1 < n and _TABLE_SEP_RE.match(self.lines[i + 1]):
+                i = self._read_table(i)
+                continue
+            image = _IMAGE_ONLY_RE.match(stripped)
+            if image:
+                self._flush_pending()
+                self._append(self._make_figure(image))
+                i += 1
+                continue
+            if stripped.startswith('>'):
+                i = self._read_quote(i)
+                continue
+            if _BULLET_RE.match(line) or _ORDERED_RE.match(line):
+                i = self._read_list(i)
+                continue
+            text, continues = hard_break(line)
+            inlines = self._inl(text.strip())
+            if self.pending_prose is not None:
+                self.pending_prose.extend([LineBreak(), *inlines])
+            else:
+                self.pending_prose = inlines
+            if not continues:
+                self._flush_pending()
+            i += 1
+        self._flush_pending()
+        return self.doc
+
+    def _scan_code_block(self, start: int, fence: re.Match) -> tuple[CodeBlock, int]:
+        """扫一个围栏代码块，返回 (块, 收尾围栏之后的行号)。列表项里也要用同一套扫描。"""
+        marker, language = (fence.group(1), fence.group(2).strip())
+        body: list[str] = []
+        i = start + 1
+        while i < len(self.lines) and (not self.lines[i].strip().startswith(marker)):
+            body.append(self.lines[i])
+            i += 1
+        return (CodeBlock(value='\n'.join(body), language=language), i + 1)
+
+    def _read_code_block(self, start: int, fence: re.Match) -> int:
+        block, i = self._scan_code_block(start, fence)
+        self._flush_pending()
+        self._append(block)
+        return i
+
+    def _read_equation(self, start: int) -> int:
+        """读一条独立公式，支持跨行与 `{#eq-x}` 标签。
+
+        标签要**先剥掉**再判断收尾的 `$$`：`$$E=mc^2$$ {#eq-a}` 去掉标签才以 `$$` 结尾。
+        不剥就会误判成跨行公式，一路扫到下一个 `$$`，把中间内容整段吞掉。
+        """
+        parts: list[str] = []
+        label = None
+        i = start
+        while i < len(self.lines):
+            text = self.lines[i].strip()
+            if i == start:
+                text = text[2:]
+            candidate, label_candidate = (text, None)
+            m = _LABEL_RE.search(text)
+            if m:
+                candidate, label_candidate = (text[:m.start()], m.group('label'))
+            if candidate.rstrip().endswith('$$'):
+                parts.append(candidate.rstrip()[:-2])
+                label = label_candidate
+                break
+            parts.append(text)
+            i += 1
+        self._append(Equation(latex='\n'.join(parts).strip(), label=label))
+        return i + 1
+
+    def _table_cell_inlines(self, line: str) -> list[list]:
+        """单元格内容与正文同一条硬换行规则：行尾 `\\` / 两个空格 → `LineBreak`。
+
+        单元格只能写在一行里，换行标记接不到下一行，但也不能因此把标记印成字符或抹掉。
+        """
+        cells = []
+        for cell in _table_cell_texts(line):
+            text, breaks = hard_break(cell)
+            inlines = self._inl(text.strip())
+            if breaks:
+                inlines.append(LineBreak())
+            cells.append(inlines)
+        return cells
+
+    def _read_table(self, start: int) -> int:
+        header = self._table_cell_inlines(self.lines[start])
+        separator = self.lines[start + 1]
+        alignments = _alignments(separator)
+        widths = _column_widths(separator)
+        rows: list[list] = []
+        i = start + 2
+        while i < len(self.lines) and _TABLE_ROW_RE.match(self.lines[i].strip()):
+            rows.append(self._table_cell_inlines(self.lines[i]))
+            i += 1
+        self._append(Table(header=header, rows=rows, alignments=alignments, widths=widths))
+        return i
+
+    def _make_figure(self, match: re.Match) -> Figure:
+        width_cm = None
+        attrs = match.group('attrs') or ''
+        m = _WIDTH_RE.search(attrs)
+        if m:
+            value, unit = (float(m.group(1)), m.group(2) or 'cm')
+            width_cm = {'cm': value, 'mm': value / 10, 'in': value * 2.54, 'pt': value * 2.54 / 72}.get(unit)
+        return Figure(path=match.group('path'), alt=match.group('alt'), width_cm=width_cm)
+
+    def _read_quote(self, start: int) -> int:
+        """引用块：去掉 `>` 之后按普通块再解析一遍，块级写法在引用里也成立。"""
+        body: list[str] = []
+        i = start
+        while i < len(self.lines) and self.lines[i].strip().startswith('>'):
+            body.append(_QUOTE_LINE_RE.sub('', self.lines[i]))
+            i += 1
+        self._flush_pending()
+        inner = _Reader('\n'.join(body), self.citation_keys).read().blocks
+        self._append(Quote(blocks=inner))
+        return i
+
+    def _read_list(self, start: int) -> int:
+        """列表读出：按缩进判层级，最多三级。
+
+        层级记在 `ListItem.level` 上，写出时落成 Word 的编号级别。反过来做——把缩进变
+        成行首空格——在 Word 里回车、调整级别、改编号形式都会失效，等于把结构写死成
+        看起来像的字符。
+        """
+        first = _ORDERED_RE.match(self.lines[start])
+        ordered = first is not None
+        start_no = int(first.group('num')) if first else 1
+        base = _indent_width((first or _BULLET_RE.match(self.lines[start])).group('indent'))
+        levels = [base]
+        level_starts: dict[int, int] = {}
+        items: list[ListItem] = []
+        i = start
+        while i < len(self.lines):
+            line = self.lines[i]
+            bullet = _BULLET_RE.match(line)
+            number = _ORDERED_RE.match(line)
+            match = number or bullet
+            if not match:
+                break
+            indent = _indent_width(match.group('indent'))
+            if indent < base:
+                break
+            while len(levels) > 1 and indent < levels[-1]:
+                levels.pop()
+            if indent > levels[-1]:
+                levels.append(indent)
+            level = min(len(levels) - 1, MAX_LIST_LEVEL)
+            is_ordered = number is not None
+            if level == 0 and is_ordered != ordered:
+                break
+            if is_ordered and level not in level_starts:
+                level_starts[level] = int(number.group('num'))
+            text, continues = hard_break(match.group('text'))
+            inlines = self._inl(text.strip())
+            i += 1
+            while continues and i < len(self.lines) and (not _starts_block(self.lines[i])):
+                next_text, continues = hard_break(self.lines[i])
+                inlines.append(LineBreak())
+                inlines.extend(self._inl(next_text.strip()))
+                i += 1
+            item = ListItem(blocks=[Paragraph(inlines=inlines)], level=level, ordered=is_ordered)
+            items.append(item)
+            content_col = _indent_width(line[:match.start('text')])
+            while i < len(self.lines):
+                stripped = self.lines[i].lstrip()
+                fence = _FENCE_RE.match(stripped)
+                leading = self.lines[i][:len(self.lines[i]) - len(stripped)]
+                if fence is None or _indent_width(leading) < content_col:
+                    break
+                code, i = self._scan_code_block(i, fence)
+                item.blocks.append(code)
+        self._flush_pending()
+        block = ListBlock(items=items, ordered=ordered, start=start_no)
+        block.level_starts = level_starts
+        self._append(block)
+        return i
+
+def read_markdown(text: str, citation_keys: Optional[set[str]]=None) -> Document:
+    """契约 Markdown 全文 → Document。
+
+    `citation_keys` 传入文献库 key 时，`@key` 能正确区分「叙述式文献引用」与「稿内交叉引用」。
+    """
+    front, body = split_frontmatter(text)
+    reader = _Reader(body, citation_keys)
+    doc = reader.read()
+    doc.meta = _metadata(front)
+    return doc

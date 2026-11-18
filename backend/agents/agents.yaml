@@ -1,0 +1,89 @@
+# 角色能力注册表；名称与入口按实际任务归并。
+mentor:
+  kind: core
+  impl: mentor
+  description: 理解目标、制定计划、审核每次进度并调整剩余计划
+  prompt: mentor.md
+  access: read-only
+  max_tool_rounds: 15
+  tools:
+  - read
+  skills:
+  - research-planning
+  - research-review
+researcher:
+  kind: worker
+  impl: worker
+  description: 阅读论文与用户材料，检索并核验来源，解析方法，设计实验，形成有证据的研究分析。必要小型计算可用run_code；复杂开发和大规模处理交给engineer。正式排版交给writer。
+  prompt: researcher.md
+  access: read-write
+  max_tool_rounds: 45
+  tools:
+  - read
+  - write
+  - run_code
+  - delete
+  - move
+  skills:
+  - literature-search
+  - paper-download
+  - paper-reading
+  - citation-management
+  - literature-review
+  - research-design
+engineer:
+  kind: worker
+  impl: worker
+  description: 开发修复程序，处理复杂数据，复现论文代码，交付可运行入口、实际结果及验证证据。代码与其生成的数据在同一步完成，避免重复手工处理。
+  prompt: engineer.md
+  access: read-write
+  max_tool_rounds: 45
+  tools:
+  - read
+  - write
+  - run_code
+  - delete
+  - move
+  skills:
+  - data-analysis
+  - spreadsheets
+  - experiments
+  - research-coding
+  - research-review
+visualizer:
+  kind: worker
+  impl: worker
+  description: 根据已有数据和方法描述制作实验结果图、机制图、框架图与流程图，交付图片与可编辑源文件；复杂数据清洗交给engineer，整份文档交给writer。
+  prompt: visualizer.md
+  access: read-write
+  max_tool_rounds: 45
+  tools:
+  - read
+  - write
+  - run_code
+  - delete
+  - move
+  skills:
+  - research-figures
+writer:
+  kind: worker
+  impl: worker
+  description: 根据已有材料组织和润色论文、报告、汇报PPT、通知公告，完成排版与可用的结构检查。不能补造结果和来源，科学依据缺口交回Mentor。
+  prompt: writer.md
+  access: read-write
+  max_tool_rounds: 45
+  tools:
+  - read
+  - write
+  - run_code
+  - delete
+  - move
+  skills:
+  - paper-writing
+  - document-formatting
+  - spreadsheets
+  - pdf-documents
+  - presentation-slides
+  - research-proposal
+  - review-response
+  - submission-check

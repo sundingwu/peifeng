@@ -1,0 +1,82 @@
+{
+  "tools": [
+    "read",
+    "write",
+    "move",
+    "delete",
+    "run_code"
+  ],
+  "network_scripts": [
+    "literature-search/scripts/research_web.py",
+    "citation-management/scripts/references.py",
+    "paper-download/scripts/download.py",
+    "paper-download/scripts/doi.py"
+  ],
+  "hosts": [
+    "html.duckduckgo.com",
+    "lite.duckduckgo.com",
+    "api.crossref.org",
+    "api.datacite.org",
+    "doi.org",
+    "arxiv.org",
+    "export.arxiv.org",
+    "openreview.net",
+    "semanticscholar.org",
+    "api.semanticscholar.org",
+    "eutils.ncbi.nlm.nih.gov",
+    "pubmed.ncbi.nlm.nih.gov",
+    "pmc.ncbi.nlm.nih.gov",
+    "nature.com",
+    "springer.com",
+    "springernature.com",
+    "sciencedirect.com",
+    "elsevier.com",
+    "wiley.com",
+    "tandfonline.com",
+    "ieee.org",
+    "acm.org",
+    "plos.org",
+    "science.org",
+    "biorxiv.org",
+    "medrxiv.org",
+    "zenodo.org",
+    "figshare.com",
+    "huggingface.co",
+    "raw.githubusercontent.com",
+    "github.com",
+    "python.org",
+    "numpy.org",
+    "scipy.org",
+    "pandas.pydata.org",
+    "matplotlib.org",
+    "scikit-learn.org",
+    "pypi.org",
+    "openai.com",
+    "wikipedia.org",
+    "ietf.org",
+    "rfc-editor.org",
+    "w3.org",
+    "bing.com"
+  ],
+  "academic_suffixes": [
+    ".edu",
+    ".edu.cn",
+    ".ac.uk",
+    ".ac.cn"
+  ],
+  "ports": [
+    443,
+    80
+  ],
+  "blocked_names": [
+    ".env",
+    ".env.local",
+    ".env.production",
+    "id_rsa",
+    "id_ed25519"
+  ],
+  "limits": {
+    "response_bytes": 41943040,
+    "timeout_seconds": 40
+  }
+}

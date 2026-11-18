@@ -1,0 +1,54 @@
+# 内置运行时（便携 CPython，约 190 MB）：由安装流程生成，不入库
+runtime/
+
+# 前端依赖与构建产物
+frontend/node_modules/
+frontend/dist/
+frontend/dist-backup-*/
+frontend/e2e/shots/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 密钥与本地配置：绝不入库（api_key 在项目根的 .env 里）
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# 运行数据：会话、项目、缓存、压测产物、迁移记录（均由程序生成，不入库）
+data/
+
+# 运行期产物
+*.log
+logs/
+
+# 演示产物（答辩 PPT 等导出物）
+output/
+
+# 任务中间产物
+internal/
+
+# PPT 制作中间文件
+.codex-ppt/
+
+# 编辑器与系统
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+.reasonix/
+
+# 临时文件
+*.tmp
+*.bak
+scratch/

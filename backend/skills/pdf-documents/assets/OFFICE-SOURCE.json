@@ -1,0 +1,16 @@
+{
+  "source": "skills-main/pdf",
+  "license": "Apache-2.0",
+  "integration": "按功能迁入本技能，去除外部命令与CLI转发；通用read仅分发。",
+  "integrated_files": {
+    "SKILL.md": "1c59577cf2d59cd3f0bfbf7b1235e8822a66f46bb8087fe2254909a26c9901da",
+    "assets/SOURCE-LICENSE.txt": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd",
+    "references/guide.md": "08a291e0322c16830f6490053210a70be42d600e40bdd73205941ec1f48f923b",
+    "scripts/process_pdf.py": "2879374b5ec1d406844f998221ff65f5284d5e9c8c22b36e4d1e9669ea28ce66",
+    "scripts/read_document.py": "37b2401b4ff3e05ddd45f779bee71fc3563a100111fdf432d7edf6c27e405659",
+    "scripts/pdf_forms/extract_form_field_info.py": "873fa5a224fa0c0858dc921ac07efaf1ac2352c8159383701da19a4f0a664b5c",
+    "scripts/pdf_forms/fill_fillable_fields.py": "7847404498f51ad3d6fe43aaa117a80f4dab11d613cf8e80b2e905291c931ca4",
+    "scripts/pdf_forms/fill_pdf_form_with_annotations.py": "976641cf08a81f7b5ecb5492f3c718ba0e924d12e3b4cbaadd0e6c85b362202b",
+    "scripts/pdf_forms/__init__.py": "4d2e081053c6595e6490574ac35aacc8c67655794dfe40c9ac5fba2a56c2a02f"
+  }
+}

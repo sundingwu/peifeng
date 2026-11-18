@@ -1,0 +1,445 @@
+"""绘图底座：matplotlib 后端、蓝白科研配色、字号网格样式、表格读取与 SVG 输出。"""
+
+from __future__ import annotations
+
+import csv
+import math
+from pathlib import Path
+from typing import Any, Optional
+
+import matplotlib
+import matplotlib.pyplot as plt  # noqa: E402 - 依赖上面的后端设置
+from matplotlib.ticker import MaxNLocator  # noqa: E402
+
+from backend.utils.paths import resolve_path
+
+
+
+# ---------------------------------------------------------------- charts
+# ---------------------------------------------------------------- chart_kit
+#: 无 GUI 环境必须用 Agg 后端（必须在 pyplot 之前设置）
+matplotlib.use("Agg")
+
+
+#: 中文字体候选（Windows 用微软雅黑，Linux/macOS 回落 Noto/DejaVu）
+
+#: 蓝白科研风配色：深蓝为主，逐级变浅，最后一个中灰用于对比
+
+#: 文字、网格与坐标轴颜色
+
+#: 出版级输出精度
+
+#: 一次最多画的分类数（再多图就不可读）
+MAX_CATEGORIES = 60
+
+#: 样式默认值：调用方给的 ``style`` 只覆盖这里出现的键，其余保持默认（蓝白科研风）。
+#: 图表格式由技能决定——技能里的 style 段原样传进来即可，工具不替你做审美决定。
+def apply(style: Optional[dict] = None) -> dict[str, Any]:
+    """统一字体、网格与坐标轴风格（每次画图前调用一次），返回生效的样式表。
+
+    ``style`` 来自技能：字体、字号、配色、网格、图题位置、dpi 都能改，
+    不传就用默认的蓝白科研风。返回的这份供各工具查 ``title_position`` / ``legend`` 等开关。
+    """
+    spec = resolve_style(style)
+    fonts = list(FONT_CANDIDATES)
+    if spec.get("font"):
+        fonts = [str(spec["font"]), *FONT_CANDIDATES]
+    family = [str(spec['font']), 'sans-serif'] if spec.get('font') else ['sans-serif']
+    if spec.get('font_latin'):
+        family.insert(0,str(spec['font_latin']))
+    plt.rcParams.update(
+        {
+            "font.family": family,
+            "font.sans-serif": fonts,
+            "font.size": spec["font_size"],
+            "axes.unicode_minus": False,
+            "axes.edgecolor": spec["spine"],
+            "axes.linewidth": spec['axes_linewidth'],
+            "axes.labelcolor": spec["text"],
+            "axes.labelsize": spec["font_size"],
+            "axes.titlesize": spec["title_size"],
+            "axes.titlecolor": spec["text"],
+            "axes.titlepad": 10,
+            "axes.grid": bool(spec["show_grid"]),
+            "axes.grid.axis": str(spec["grid_axis"]),
+            "grid.color": spec["grid_color"],
+            "grid.linestyle": spec['grid_linestyle'],
+            "grid.linewidth": spec['grid_linewidth'],
+            "xtick.color": spec["text"],
+            "ytick.color": spec["text"],
+            "xtick.labelsize": spec["tick_size"],
+            "ytick.labelsize": spec["tick_size"],
+            "legend.frameon": False,
+            "legend.fontsize": spec["legend_size"],
+            "figure.facecolor": spec["background"],
+            "savefig.facecolor": spec["background"],
+        }
+    )
+    return spec
+
+
+def palette_of(spec: dict) -> list:
+    """取系列配色；技能给的列表太短时循环取用。"""
+    colors = list(spec.get("palette") or PALETTE)
+    return colors or list(PALETTE)
+
+
+def resolve(path: str, base_dir) -> Path:
+    """相对路径以项目目录为基准（不依赖进程 cwd）；绝对路径必须落在白名单内。"""
+    from backend.utils.paths import resolve_path
+
+    return resolve_path(path, base_dir, write=True)
+
+
+def prepare(output: str, base_dir) -> Path:
+    """校验输出路径并返回绝对路径（只支持 PNG）。"""
+    name = (output or "").strip()
+    if not name:
+        raise RuntimeError("output 不能为空（给一个 .png 文件名）")
+    target = resolve(name, base_dir)
+    if target.suffix.lower() != ".png":
+        raise RuntimeError(f"只支持 PNG 输出（当前：{target.name}）")
+    return target
+
+
+def save(figure, target: Path, spec: Optional[dict] = None) -> None:
+    """按 style 指定的精度与底色保存，并关闭画布。"""
+    spec = spec or STYLE_DEFAULTS
+    target.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(
+        target,
+        dpi=int(spec.get("dpi") or DPI),
+        bbox_inches="tight",
+        facecolor=str(spec.get("background") or "white"),
+    )
+    plt.close(figure)
+
+
+def pixel_size(target: Path) -> tuple[int, int]:
+    """落盘图片的真实像素尺寸（保存时按 tight 裁剪，画布尺寸不等于最终尺寸）。"""
+    try:
+        from PIL import Image
+
+        with Image.open(target) as image:
+            return image.size
+    except Exception:  # noqa: BLE001 - 读不到就退回画布估算
+        return (0, 0)
+
+
+def active_font(spec: Optional[dict] = None) -> str:
+    """实际生效的中文字体名（渲染中文靠它，缺字形会变成方框）。"""
+    from matplotlib import font_manager
+
+    candidates = list(FONT_CANDIDATES)
+    if spec and spec.get("font"):
+        candidates = [str(spec["font"]), *candidates]
+    for name in candidates:
+        try:
+            found = font_manager.findfont(font_manager.FontProperties(family=name), fallback_to_default=False)
+        except Exception:  # noqa: BLE001 - 找不到就试下一个
+            continue
+        if found and "DejaVu" not in Path(found).name or name == "DejaVu Sans":
+            return f"{name}（{Path(found).name}）"
+    return "未知"
+
+
+def report(target: Path, *, kind: str, axes, categories=None, series=None, notes: str = "") -> str:
+    """出图回执：把"画对了没有"该核对的项目一次报全。
+
+    标题、轴标签、分类数、系列名与取值范围、像素尺寸、字节数、实际中文字体——
+    这些正是核验一张图是否可用要看的东西，一并给出就不必再解析像素去猜。
+    """
+    width, height = pixel_size(target)
+    lines = [f"已生成{kind}：{target}（{width}×{height} 像素，{target.stat().st_size} 字节）"]
+    title = axes.get_title()
+    lines.append(f"标题：{title or '（未设）'}")
+    xlabel, ylabel = axes.get_xlabel(), axes.get_ylabel()
+    if xlabel or ylabel:
+        lines.append(f"轴标签：x={xlabel or '（未设）'}  y={ylabel or '（未设）'}")
+    if categories:
+        shown = "、".join(str(item) for item in list(categories)[:8])
+        more = f" 等 {len(categories)} 项" if len(categories) > 8 else f"（{len(categories)} 项）"
+        lines.append(f"分类：{shown}{more}")
+    if series:
+        parts = []
+        for item in series:
+            values = [value for value in item.get("values", []) if value is not None]
+            if values:
+                parts.append(f"{item.get('name') or '系列'}（{min(values):g}–{max(values):g}）")
+            else:
+                parts.append(str(item.get("name") or "系列"))
+        lines.append(f"系列：{'；'.join(parts)}")
+    if notes:
+        lines.append(notes)
+    lines.append(f"中文渲染字体：{active_font()}")
+    return "\n".join(lines)
+
+
+def clean_axes(axes, *, grid_axis: str = "y", spec: Optional[dict] = None) -> None:
+    """去掉上右边框、按 style 决定要不要网格，并把网格压到数据下方。
+
+    网格**不写死 True**：``style.show_grid = false``（论文常见要求）时要真的关掉——
+    这里曾经硬编码 True，rcParams 里的设置会被它覆盖。
+    """
+    spec = spec or STYLE_DEFAULTS
+    for side in ("top", "right"):
+        axes.spines[side].set_visible(False)
+    axes.spines["left"].set_color(spec.get("spine") or SPINE)
+    axes.spines["bottom"].set_color(spec.get("spine") or SPINE)
+    # 注意：grid(False, linestyle=...) 会**仍然启用网格**（matplotlib 认为给了线样式就是要画），
+    # 所以关网格必须单独调 grid(False)，不能带样式参数
+    if bool(spec.get("show_grid", True)):
+        axes.grid(
+            True,
+            axis=str(spec.get("grid_axis") or grid_axis),
+            linestyle=spec.get('grid_linestyle','--'),
+            linewidth=spec.get('grid_linewidth',.6),
+            color=spec.get("grid_color") or GRID,
+        )
+    else:
+        axes.grid(False)
+    axes.set_axisbelow(True)
+    if grid_axis == "y":
+        axes.yaxis.set_major_locator(MaxNLocator(nbins=6))
+    else:
+        axes.xaxis.set_major_locator(MaxNLocator(nbins=6))
+
+
+def figure_size(count: int, *, ratio: float = 1.5, horizontal: bool = False) -> tuple[float, float]:
+    """按分类数给一个合适的画布尺寸。"""
+    width = min(11.0, max(5.6, count * 0.62))
+    height = max(3.6, count * 0.34) if horizontal else width / ratio
+    return (width, height)
+
+
+def x_positions(labels: list[str]) -> list[int]:
+    """分类的整数位置，分类多时标签斜排避免重叠。"""
+    return list(range(len(labels)))
+
+
+def label_x(axes, positions: list[int], labels: list[str]) -> None:
+    """把分类标签贴到 x 轴，超过 12 个斜排。"""
+    rotate = 0 if len(labels) <= 12 else 30
+    axes.set_xticks(positions)
+    axes.set_xticklabels(labels, rotation=rotate, ha="right" if rotate else "center")
+
+
+def label_y(axes, positions: list[int], labels: list[str]) -> None:
+    """把分类标签贴到 y 轴（条形图）。"""
+    axes.set_yticks(positions)
+    axes.set_yticklabels(labels)
+
+
+def place_legend(axes, count: int, *, columns: int = 4, spec: Optional[dict] = None) -> None:
+    """多系列时把图例横排到绘图区上方，避免压住数据（科研风常见做法）。
+
+    ``spec["legend"] == "none"`` 时不画图例——论文里常把系列说明写进图注，图上不放图例。
+    """
+    if spec and str(spec.get("legend") or "auto").lower() == "none":
+        return
+    if count <= 1:
+        return
+    axes.legend(
+        loc="lower left",
+        bbox_to_anchor=(0, 1.02),
+        ncol=min(count, columns),
+        frameon=False,
+        borderaxespad=0,
+        handlelength=1.6,
+        columnspacing=1.4,
+    )
+
+
+def put_title(figure, axes, title: str, spec: Optional[dict] = None, pad: int = 10) -> None:
+    """按 ``style.title_position`` 放图题。
+
+    ``top``（默认）用轴标题；``bottom`` 放在画布下方——中文论文/期刊常要求"图题在图下"，
+    这时候用轴标题就不合规范了。
+    """
+    if not title:
+        return
+    spec = spec or STYLE_DEFAULTS
+    if str(spec.get("title_position") or "top").lower() == "bottom":
+        figure.text(
+            0.5,
+            -0.02,
+            title,
+            ha="center",
+            va="top",
+            fontsize=spec.get("title_size") or 11,
+            color=spec.get("text") or TEXT,
+        )
+    else:
+        axes.set_title(title, pad=pad)
+
+
+def title_pad(axes, count: int) -> int:
+    """有图例时把标题抬高，留出图例的位置。"""
+    return 26 if count > 1 else 10
+
+
+def numbers(values: Any, name: str) -> list[float]:
+    """把一组值转成浮点，失败时给出可定位的错误。"""
+    if not isinstance(values, list) or not values:
+        raise RuntimeError(f"{name} 需要是非空数组")
+    try:
+        result = [float(value) for value in values]
+        if any(isinstance(value, bool) for value in values) or not all(math.isfinite(value) for value in result):
+            raise ValueError("非有限数值")
+        return result
+    except (TypeError, ValueError):
+        raise RuntimeError(f"{name} 含非数字：{values!r}") from None
+
+
+def clean_series(series: Optional[list]) -> list[dict]:
+    """校验 series=[{name, values}]，转成 [{name, values: [float]}]。"""
+    cleaned: list[dict] = []
+    for index, item in enumerate(series or []):
+        if not isinstance(item, dict):
+            raise RuntimeError(f"series[{index}] 需要是对象 {{name, values}}")
+        values = numbers(item.get("values"), f"series[{index}].values")
+        entry = {"name": str(item.get("name") or f"系列{index + 1}"), "values": values}
+        if item.get("errors") is not None:
+            errors = numbers(item["errors"], f"series[{index}].errors")
+            if len(errors) != len(values) or any(error < 0 for error in errors):
+                raise RuntimeError("误差值必须非负且与数值等长")
+            entry["errors"] = errors
+        if item.get('counts') is not None:
+            counts = numbers(item['counts'],f'series[{index}].counts')
+            if len(counts)!=len(values) or any(count<0 or count!=int(count) for count in counts):
+                raise RuntimeError('样本数必须是非负整数，且与数值等长')
+            entry['counts'] = [int(count) for count in counts]
+        cleaned.append(entry)
+    return cleaned
+
+
+def check_lengths(labels: list[str], data: list[dict]) -> None:
+    """分类与每个系列必须等长，且分类数不超上限。"""
+    if not labels:
+        raise RuntimeError("没有分类标签：请给 categories，或用 source 指定表格里的分类列")
+    if not data:
+        raise RuntimeError("没有数据：请给 series=[{{name, values}}]，或用 source 指定表格里的数值列")
+    if len(labels) > MAX_CATEGORIES:
+        raise RuntimeError(f"分类过多（{len(labels)} 个，上限 {MAX_CATEGORIES}）：先聚合再画")
+    for item in data:
+        if len(item["values"]) != len(labels):
+            raise RuntimeError(
+                f"系列 {item['name']} 有 {len(item['values'])} 个值，但分类有 {len(labels)} 个：两者必须等长"
+            )
+
+
+def load_table(source: dict, base_dir, *, category: str = "category", values: str = "values"):
+    """从 .xlsx / .csv 按列名取数，返回 ``(分类标签, [{name, values}])``。
+
+    ``source`` 形如 ``{file, sheet?, category: 列名, values: [列名]}``；
+    饼图与散点图用单列时传 ``values`` 为长度为 1 的列表即可。
+    """
+    raw = str(source.get("file") or "").strip()
+    if not raw:
+        raise RuntimeError("source.file 不能为空")
+    path = resolve(raw, base_dir)
+    if not path.is_file():
+        raise RuntimeError(f"表格不存在：{path}")
+    rows = read_table(path, str(source.get("sheet") or ""))
+    if not rows:
+        raise RuntimeError(f"表格没有数据：{path}")
+
+    header = [str(cell).strip() for cell in rows[0]]
+    body = rows[1:]
+    category_column = str(source.get(category) or "").strip()
+    if category_column not in header:
+        raise RuntimeError(f"找不到分类列 {category_column}（表头：{'、'.join(header)}）")
+    value_columns = [str(item).strip() for item in (source.get(values) or []) if str(item).strip()]
+    if not value_columns:
+        raise RuntimeError(f"source.{values} 不能为空（给要画的列名）")
+    missing = [column for column in value_columns if column not in header]
+    if missing:
+        raise RuntimeError(f"找不到数值列：{'、'.join(missing)}（表头：{'、'.join(header)}）")
+
+    category_index = header.index(category_column)
+    labels: list[str] = []
+    buckets: list[list[float]] = [[] for _ in value_columns]
+    for row in body:
+        cell = row[category_index] if category_index < len(row) else None
+        if cell is None or not str(cell).strip():
+            continue
+        labels.append(str(cell).strip())
+        for position, column in enumerate(value_columns):
+            index = header.index(column)
+            buckets[position].append(cell_number(row[index] if index < len(row) else None, column, labels[-1]))
+    data = [{"name": column, "values": bucket} for column, bucket in zip(value_columns, buckets)]
+    return labels, data
+
+
+def read_table(path: Path, sheet: str = "") -> list[list]:
+    """读取表格为二维列表：.xlsx 用 openpyxl（指定 sheet，缺省第一个），.csv 用标准库。"""
+    if path.suffix.lower() == ".csv":
+        with path.open("r", encoding="utf-8-sig", newline="") as stream:
+            return [row for row in csv.reader(stream)]
+    if path.suffix.lower() == ".xlsx":
+        from openpyxl import load_workbook
+
+        workbook = load_workbook(str(path), read_only=True, data_only=True)
+        try:
+            if sheet and sheet not in workbook.sheetnames:
+                raise RuntimeError(f"工作表不存在：{sheet}")
+            worksheet = workbook[sheet] if sheet else workbook.worksheets[0]
+            return [list(row) for row in worksheet.iter_rows(values_only=True)]
+        finally:
+            workbook.close()
+    raise RuntimeError(f"只支持 .xlsx 或 .csv 取数（当前：{path.name}）")
+
+
+def cell_number(cell, column: str, label: str) -> float:
+    """把单元格转成数字；空值按 0，非数字给出可定位的错误。"""
+    if cell is None or (isinstance(cell, str) and not cell.strip()):
+        return 0.0
+    try:
+        return float(cell)
+    except (TypeError, ValueError):
+        raise RuntimeError(f"列 {column} 在 {label} 这一行的值不是数字：{cell!r}") from None
+
+
+# ---------------------------------------------------------------- figure_style
+FONT_CANDIDATES = ['Microsoft YaHei','SimHei','Noto Sans CJK SC','PingFang SC','DejaVu Sans']
+PALETTE = ('#1F4E79','#2E75B6','#5B9BD5','#9DC3E6','#BDD7EE','#7F7F7F')
+TEXT, GRID, SPINE, DPI = '#262626', '#D9D9D9', '#BFBFBF', 300
+STYLE_DEFAULTS: dict[str, Any] = {
+    'font':None,'font_latin':None,'font_size':10,'title_size':11,'tick_size':9,'legend_size':9,
+    'value_size':None,'caption_size':None,'palette':list(PALETTE),'text':TEXT,'grid_color':GRID,
+    'spine':SPINE,'background':'white','show_grid':True,'grid_axis':'y','title_position':'top',
+    'legend':'auto','dpi':DPI,'axes_linewidth':.8,'grid_linewidth':.6,'grid_linestyle':'--',
+    'error_color':None,'error_linewidth':1.,'error_capsize':4.,
+    'node_fill':'#eaf2f8','node_border':'#35516c','node_text':None,'node_font_size':None,
+    'node_radius':12.,'node_border_width':2.,'edge_color':None,'edge_width':2.,
+}
+
+
+def resolve_style(style: Optional[dict]) -> dict[str, Any]:
+    provided = style if isinstance(style,dict) else {}
+    spec = dict(STYLE_DEFAULTS)
+    spec['palette'] = list(PALETTE)
+    for name,value in provided.items():
+        if name in spec and value is not None:
+            if name=='palette':
+                if not isinstance(value,(list,tuple)) or not value:
+                    raise RuntimeError('style.palette必须为非空颜色数组')
+                spec[name] = list(value)
+            else:
+                spec[name] = value
+    if isinstance(spec['font_size'],bool) or not isinstance(spec['font_size'],(int,float)) or not math.isfinite(spec['font_size']) or spec['font_size']<=0:
+        raise RuntimeError('style.font_size必须是有限的正数')
+    spec['value_size'] = spec['value_size'] if spec['value_size'] is not None else spec['tick_size']
+    spec['caption_size'] = spec['caption_size'] if spec['caption_size'] is not None else spec['font_size']*.8
+    spec['error_color'] = spec['error_color'] or spec['text']
+    spec['node_text'] = spec['node_text'] or provided.get('text') or '#17324d'
+    spec['edge_color'] = spec['edge_color'] or spec['node_border']
+    if spec['node_font_size'] is None:
+        spec['node_font_size'] = provided.get('font_size',16)
+    positive = {'font_size','title_size','tick_size','legend_size','value_size','caption_size','dpi','node_font_size'}
+    widths = {'axes_linewidth','grid_linewidth','error_linewidth','error_capsize','node_radius','node_border_width','edge_width'}
+    for name in positive | widths:
+        value = spec[name]
+        if isinstance(value,bool) or not isinstance(value,(int,float)) or not math.isfinite(value) or value<0 or name in positive and value==0:
+            raise RuntimeError(f'style.{name}必须是有限的'+('正数' if name in positive else '非负数'))
+    return spec

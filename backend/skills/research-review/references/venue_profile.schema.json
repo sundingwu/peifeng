@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Imbad0202/academic-research-skills/shared/contracts/submission/venue_profile.schema.json",
+  "title": "场地配置文件",
+  "description": "#394 学者声明型期刊档案（规范文档 docs/design/2026-06-10-394-submission-package-verifier-spec.md §4）。scripts/verify_submission_package.py --venue-profile 的 Family B 比较来源。独立 schema——绝不嵌入护照条目 schema（Invariant 11 模式）。仅声明值：该档案绝不从期刊名称抓取或推断（R-L3-2-D 无推断镜像）——字段为 null/缺失的检查报告 NOT-CHECKED，绝不猜测限制值。在受理 Step 3 指定目标期刊时（可选）收集；可像任何声明输入一样跨运行存储并重新输入。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "declared_by"
+  ],
+  "properties": {
+    "venue_name": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "仅显示——绝不用于推理或查找（R-L3-2-D 镜像）。"
+    },
+    "word_limit": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1,
+      "description": "稿件字数上限（B1）。与格式转换噪声的±2%容差相比（规范§3.2）。"
+    },
+    "word_count_scope": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "body_only",
+        "body_plus_references",
+        "all",
+        null
+      ],
+      "description": "会场计数规则包含的内容。报告声明实际计数的对象；null = 验证器按 body_only 计数并明确说明（该方法已声明，绝不静默假定为与会场完全一致——规范 §3.2/§10 第 4 项）。"
+    },
+    "abstract_word_limit": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1,
+      "description": "摘要字数上限（B2）。与word_limit相同的±2%容差等级。"
+    },
+    "keyword_range": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "required": [
+        "min",
+        "max"
+      ],
+      "properties": {
+        "min": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "description": "接受的关键字数量范围，含端点（B3）。精确比较——无容差。"
+    },
+    "required_sections": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "会议场所要求的章节名称（B4），例如 [\"Data Availability\", \"CRediT\"]。与稿件标题进行不区分大小写的匹配（声明的名称包含在标题中）。"
+    },
+    "reference_limit": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1,
+      "description": "参考文献列表条目上限（B5）。精确比较。"
+    },
+    "acknowledgments_forbidden_in_blind": {
+      "type": [
+        "boolean",
+        "null"
+      ],
+      "description": "学者声明：该 venue 要求从盲审版本中移除致谢。仅当该声明为真时，A4（匿名化变体中存在致谢）才成为严格合格——默认情况下，A4 的确定性信号保持建议性质，因为去匿名化判断由学者作出（spec §3.1 具有关键承载作用）。"
+    },
+    "blind_review": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "double",
+        "single",
+        "open",
+        null
+      ],
+      "description": "审查模型。`double` 即使不存在匿名化变体也会触发 Family A 残基扫描（切片 3，规范 §3.1）——一个声明为双盲但无盲版本的包本身即为失败。"
+    },
+    "declared_by": {
+      "const": "scholar",
+      "description": "存在的唯一来源值（规范 §4）：该配置文件由学者声明，仅此而已。CLI 会拒绝没有此标记的配置文件，而不是使用来源未知的值。"
+    }
+  }
+}

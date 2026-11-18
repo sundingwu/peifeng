@@ -1,0 +1,18 @@
+{
+  "source": "nature-skills/nature-figure",
+  "files": {
+    "LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    "references/asset-adaptation.md": "64c4f788962d73beba1bbd919255dffe620de3090579e7ec811e88e557ac4c3d",
+    "references/figure-legend-conventions.md": "7d00fc1839d5b152b289c8d892e723549be06c38ea75761763108a5ac34303fd",
+    "references/multipanel-evidence-architecture.md": "79ca617cc05088d6fcfb065140d0ee036eb849738bb79306964eb9aa3a4ed274",
+    "references/qa-contract.md": "4f31375cdb614d74eddb8aa7691c0bdfc8a8f20defcca27ce4a36192308748a8",
+    "references/vector-schematic-style-rules.md": "fa96f0452b67deded2ce0437dc6bde7bedeae9dd438f18e22525d61953b32ee5",
+    "scripts/audit_figure_collisions.py": "4bd020238a9f207c8a67c61d7209cef5959f2995a1d9cd95911d6fa93de7aa36",
+    "scripts/audit_panel_alignment.py": "4ed2d6afe9db45aaf6ca26aeb264cfc251ae92b49ee9fbf117d926e1956acf56",
+    "scripts/audit_pdf_text.py": "0b3d3e30ce9ec7191b8ba6dd053226487ab41594297005afcd127acda3b08281",
+    "scripts/audit_svg_schematic.py": "8776cb9da07dc2ef6edf65c1ad23184567172b03685b880c78f3ef74d7241db8",
+    "scripts/figure_safety.py": "0e3e9601aacdafca32ef5fbf1967bdeec0abbf7f564edfd711875432bd47c212",
+    "scripts/plot_templates.py": "c5c042bc09464d58cc0363bc8542db946acb4c7efb53360a70386e1a6704691a",
+    "scripts/validate_figure.py": "b9800e93dfa289eddd2e9438af755fcc6dd4a5f0f1da7778e4f999a91b69b042"
+  }
+}
