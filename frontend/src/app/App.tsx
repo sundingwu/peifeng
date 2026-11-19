@@ -320,6 +320,16 @@ function applyEvent(items: StreamItem[], event: AgentEvent): StreamItem[] {
         },
       ];
     }
+    case "step_review_start":
+      return [
+        ...items,
+        {
+          id: id("reviewStart"),
+          type: "reviewStart",
+          index: Number(data.index ?? 0),
+          at: Date.now(),
+        },
+      ];
     case "step_review":
       return [
         ...items,

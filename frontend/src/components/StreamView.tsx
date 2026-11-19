@@ -41,6 +41,7 @@ export type StreamItem =
   | { id: string; type: "task"; requirement: string; at?: number }
   | { id: string; type: "plan"; requirement: string; summary: string; steps: PlanStepLine[] }
   | { id: string; type: "step"; index: number; total: number; goal: string; worker: string; at?: number }
+  | { id: string; type: "reviewStart"; index: number; at?: number }
   | { id: string; type: "stepReview"; index: number; approved: boolean; summary: string; at?: number }
   | { id: string; type: "text"; text: string; streaming: boolean }
   | { id: string; type: "tool"; name: string; detail: string; done: boolean; failed: boolean }
@@ -106,6 +107,8 @@ function groupItems(items: StreamItem[]): Group[] {
       groups.push({ kind: "notice", item });
       continue;
     }
+    // 评审开始只是状态信号，不进时间线（与 step 一样跳过）
+    if (item.type === "reviewStart") continue;
     groups.push({ kind: "result", item });
   }
   return groups;
@@ -407,22 +410,16 @@ const PHASE: Record<string, { text: string; tone: string }> = {
 /** 当前阶段：计划中 / 执行中 / 评审中（+ 终态）。 */
 function phaseOf(items: StreamItem[]): keyof typeof PHASE {
   let phase: keyof typeof PHASE = "plan";
-  let sawStep = false;
   for (const item of items) {
     if (item.type === "plan") phase = "plan";
-    if (item.type === "step") {
-      phase = "running";
-      sawStep = true;
-    }
+    if (item.type === "step") phase = "running";
+    // 后端在调用 Mentor 前显式发 step_review_start，这里直接用，不再猜测
+    if (item.type === "reviewStart") phase = "review";
+    // 评审后模型又出文本或起工具：说明进了返修，回到执行中
+    if (item.type === "tool" || (item.type === "text" && item.text.trim())) phase = "running";
     if (item.type === "stepReview") phase = item.approved ? phase : "running";
     if (item.type === "result") phase = "done";
     if (item.type === "notice" && item.terminal) phase = "stopped";
-  }
-  // 刚起完最后一轮工具、还没收到评审结果时，显示「评审中」
-  const lastMeaningful = [...items].reverse().find((item) => item.type !== "text" && item.type !== "tool");
-  if (sawStep && lastMeaningful?.type === "step") {
-    const lastTool = [...items].reverse().find((item) => item.type === "tool");
-    if (lastTool && lastTool.done) phase = "review";
   }
   return phase;
 }

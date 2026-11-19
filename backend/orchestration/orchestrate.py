@@ -1379,6 +1379,9 @@ class TaskOrchestrator:
             review_request.previous_review = failures[-1] if failures else None
             # 评审带回来的剩余计划同样要校验：worker 写错/漏写就退回让它重出，
             # 不替它改计划，也不挑一个默认角色顶上。
+            # 告诉页面"这一步进入评审了"：前端据此显示「评审中」，不必从
+            # "最后一条工具已结束"去猜（同一步骤里连续调工具时会误判、来回闪）。
+            self.emit("step_review_start", index=index, attempt=len(attempts))
             plan_repairs = 0
             while True:
                 review, review_updates = self.dispatch_node("mentor", review_request)
